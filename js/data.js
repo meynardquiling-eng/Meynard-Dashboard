@@ -27,6 +27,7 @@
 
   let db = null;
   let assets = null;
+  let browserCopyHidden = false;
 
   /* ---------- Saving ---------- */
 
@@ -227,6 +228,57 @@
 
     /* ----- Courseware materials ----- */
     get materials() { return state.materials; },
+
+    /* ----- Copying data saved in this browser into the shared dashboard ----- */
+    // Before the dashboard was shared, everything was saved in the browser. This finds what's
+    // still there and not yet in the shared database (null when there's nothing to copy).
+    get browserCopy() {
+      if (state.mode !== "shared" || browserCopyHidden) return null;
+      const cohorts = store.get("cohorts", []).filter((c) => !findCohort(c.id));
+      const skipped = store.get("browserCopySkipped", []);
+      const materials = store.get("materials", [])
+        .filter((m) => !skipped.includes(m.id) && !state.materials.some((x) => x.id === m.id));
+      return cohorts.length || materials.length ? { cohorts, materials } : null;
+    },
+    hideBrowserCopy() { browserCopyHidden = true; notify(); },
+    // Copies cohorts, trainees and materials across. The browser's copy is left untouched.
+    async copyBrowserData() {
+      const copy = this.browserCopy;
+      const skipped = [];
+      if (!copy) return { cohorts: 0, materials: 0, skipped };
+      for (const c of copy.cohorts) {
+        const cohort = { trainees: [], teamLead: null, slack: "", ...c };
+        state.cohorts.push(cohort);
+        await saveCohort(cohort);
+      }
+      const localAttendance = store.get("attendance", {});
+      for (const [key, doc] of Object.entries(localAttendance)) {
+        if (!state.attendance[key] && copy.cohorts.some((c) => c.id === doc.cohortId)) {
+          state.attendance[key] = doc;
+          await saveAttendance(doc);
+        }
+      }
+      let materials = 0;
+      for (const m of copy.materials) {
+        const meta = { ...m };
+        if (m.source === "file") {
+          const file = await this.getFile(m.id).catch(() => null);
+          const problem = file ? this.uploadProblem(new File([file], m.fileName)) : "missing";
+          if (problem) {
+            skipped.push(m.fileName);
+            store.set("browserCopySkipped", [...store.get("browserCopySkipped", []), m.id]);
+            continue;
+          }
+          const ext = (m.fileName.split(".").pop() || "").toLowerCase();
+          meta.assetId = (await assets.upload(file, { type: SHARED_FILE_TYPES[ext] })).id;
+        }
+        state.materials.unshift(meta);
+        await saveMaterial(meta);
+        materials++;
+      }
+      notify();
+      return { cohorts: copy.cohorts.length, materials, skipped };
+    },
 
     // Why a file can't be uploaded here, or nothing if it can.
     uploadProblem(file) {

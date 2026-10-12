@@ -35,8 +35,41 @@
         <span class="badge-icon">${icon(tool.icon)}</span>
         <div class="min0"><h1>${esc(tool.name)}</h1><div class="sub">${esc(tool.description || "")}</div></div>
       </header>
+      ${browserCopyBanner()}
       <div class="${animate ? "fade-in" : ""}">${data.ready ? tool.render(context()) : notReady()}</div>`;
   }
+
+  // Offer to bring over cohorts that were saved in this browser before the dashboard was shared.
+  function browserCopyBanner() {
+    const copy = data.browserCopy;
+    if (!copy) return "";
+    const trainees = copy.cohorts.reduce((n, c) => n + (c.trainees || []).length, 0);
+    const parts = [
+      copy.cohorts.length && TrainerHub.plural(copy.cohorts.length, "cohort") + ` (${TrainerHub.plural(trainees, "trainee")})`,
+      copy.materials.length && TrainerHub.plural(copy.materials.length, "courseware item"),
+    ].filter(Boolean).join(" and ");
+    return `
+      <div class="banner">
+        <div class="min0"><strong>Found ${esc(parts)} saved in this browser</strong>
+          <span>They were entered before the dashboard switched to shared storage. Copy them in so everyone with the link, and the Slack attendance, can use them.</span></div>
+        <div class="btn-row">
+          <button class="btn" data-action="app:copyBrowserData">Copy into the dashboard</button>
+          <button class="btn secondary" data-action="app:hideBrowserCopy">Not now</button>
+        </div>
+      </div>`;
+  }
+
+  const appActions = {
+    async copyBrowserData(el) {
+      el.disabled = true;
+      el.textContent = "Copying…";
+      const r = await data.copyBrowserData();
+      render();
+      TrainerHub.toast(`Copied ${TrainerHub.plural(r.cohorts, "cohort")} and ${TrainerHub.plural(r.materials, "courseware item")}` +
+        (r.skipped.length ? `. Not copied (file type or size not supported): ${r.skipped.join(", ")}` : ""));
+    },
+    hideBrowserCopy() { data.hideBrowserCopy(); },
+  };
 
   function notReady() {
     return data.mode === "connecting"
@@ -46,6 +79,7 @@
 
   function runAction(spec, el, event) {
     const [id, name] = spec.split(":");
+    if (id === "app") return appActions[name] && appActions[name](el, event);
     const tool = tools.find((t) => t.id === id);
     const fn = tool && tool.actions && tool.actions[name];
     if (fn) fn(el, context(), event);
