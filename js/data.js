@@ -18,6 +18,10 @@
     cohorts: [],
     materials: [],
     attendance: {}, // "<cohortId>_<date>" -> attendance document
+    // Who is viewing. manageClasses = may run the Quiz Generator (editors and the owner of the shared dashboard).
+    perms: { manageClasses: false, userId: null },
+    quizConfig: null,   // { controlSheetId, requestsFolderId } — not secrets
+    quizRequests: [],   // dashboard-side record of submitted quiz requests (no answers, no scores)
   };
   const listeners = [];
   const notify = () => listeners.forEach((fn) => fn());
@@ -27,6 +31,7 @@
 
   let db = null;
   let assets = null;
+  let mcp = null;
   let browserCopyHidden = false;
 
   /* ---------- Saving ---------- */
@@ -76,9 +81,12 @@
 
   function startLocal() {
     state.mode = "local";
+    state.perms = { manageClasses: true, userId: null }; // the person with the file on their computer
     state.cohorts = store.get("cohorts", []);
     state.materials = store.get("materials", []);
     state.attendance = store.get("attendance", {});
+    state.quizConfig = store.get("quizConfig", null);
+    state.quizRequests = store.get("quizRequests", []);
     notify();
   }
 
@@ -95,6 +103,14 @@
       return;
     }
     try { assets = await window.claude.use("assets"); } catch { assets = null; }
+    try { mcp = await window.claude.use("mcp"); } catch { mcp = null; }
+    try {
+      const user = await window.claude.use("user");
+      state.perms = {
+        manageClasses: user ? await user.canEdit() : false,
+        userId: user ? await user.id() : null,
+      };
+    } catch { state.perms = { manageClasses: false, userId: null }; }
     state.mode = "shared";
 
     const onError = () => toast("Lost the live connection to the dashboard. Reload the page.");
@@ -112,6 +128,18 @@
       state.attendance = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
       notify();
     }, onError);
+    if (state.perms.manageClasses) {
+      // Readable only by editors (see the db rules declared when the dashboard is published).
+      db.doc("quiz/config").onSnapshot((snap) => {
+        state.quizConfig = snap.exists ? clone(snap.data()) : null;
+        notify();
+      }, onError);
+      db.collection("quizRequests").onSnapshot((snap) => {
+        state.quizRequests = snap.docs.map((d) => clone(d.data()))
+          .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+        notify();
+      }, onError);
+    }
     notify();
   }
 
@@ -151,6 +179,8 @@
   TrainerHub.data = {
     /** "local", "connecting", "shared" or "unavailable". */
     get mode() { return state.mode; },
+    /** { manageClasses, userId } for the current viewer. */
+    get perms() { return state.perms; },
     get ready() { return state.mode === "local" || state.mode === "shared"; },
     onChange(fn) { listeners.push(fn); },
 
@@ -160,7 +190,7 @@
 
     // classType is one of TrainerHub.CLASS_TYPES; teamLead is { name } or null; slack is "#channel" or a link.
     addCohort({ name, classType, startDate, notes, teamLead = null, slack = "" }) {
-      const cohort = { id: uid(), name, classType, startDate, notes, teamLead, slack, trainees: [], createdAt: new Date().toISOString() };
+      const cohort = { id: uid(), name, classType, startDate, notes, teamLead, slack, trainees: [], createdAt: new Date().toISOString(), createdBy: state.perms.userId };
       state.cohorts.push(cohort);
       saveCohort(cohort);
       return cohort;
@@ -235,6 +265,29 @@
       doc.records[traineeId] = r;
       doc.unmatched.splice(index, 1);
       saveAttendance(doc);
+    },
+
+    /* ----- Quiz Generator (dashboard side only: settings and request records) ----- */
+    get quizConfig() { return state.quizConfig; },
+    saveQuizConfig(cfg) {
+      state.quizConfig = { ...cfg, updatedAt: new Date().toISOString() };
+      if (db) return write("quiz/config", () => db.doc("quiz/config").set(clone(state.quizConfig)));
+      store.set("quizConfig", state.quizConfig);
+    },
+    get quizRequests() { return state.quizRequests; },
+    saveQuizRequest(req) {
+      const i = state.quizRequests.findIndex((r) => r.requestId === req.requestId);
+      if (i >= 0) state.quizRequests[i] = req; else state.quizRequests.unshift(req);
+      if (db) return write("quizRequests/" + req.requestId, () => db.doc("quizRequests/" + req.requestId).set(clone(req)));
+      store.set("quizRequests", state.quizRequests);
+    },
+    /**
+     * Calls a Google Drive connector tool as the viewer. Resolves the tool result; rejects with
+     * { code, message } (codes from the claude.ai connector runtime, plus "no_connector").
+     */
+    async drive(tool, input) {
+      if (!mcp) throw { code: "no_connector", message: "Google Drive access is only available in the shared dashboard." };
+      return mcp.callTool("Google Drive", tool, input, { cache: false });
     },
 
     /* ----- Courseware materials ----- */

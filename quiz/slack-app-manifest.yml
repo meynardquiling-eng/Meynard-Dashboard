@@ -1,0 +1,24 @@
+# Slack app manifest for the Trainer Hub quiz bot.
+# Create it at https://api.slack.com/apps -> Create New App -> From an app manifest, paste this,
+# then replace REQUEST_URL with the Apps Script web app /exec URL (see QUIZ.md).
+display_information:
+  name: Trainer Hub Quiz
+  description: Sends each trainee a private quiz and records their answers.
+features:
+  bot_user:
+    display_name: Trainer Hub Quiz
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - users:read        # needed with users:read.email
+      - users:read.email  # users.lookupByEmail: match trainee emails to Slack accounts
+      - im:write          # conversations.open: open a DM with a trainee
+      - chat:write        # chat.postMessage / chat.update: send and advance the quiz
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: REQUEST_URL
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

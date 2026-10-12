@@ -16,6 +16,7 @@ window.TrainerHub = (function () {
    *   description  one line under the page title
    *   icon         inner SVG markup (24x24 stroke icon)
    *   render       (ctx) => HTML string for the page body
+   *   visible      optional (ctx) => boolean; the tool is left out of the rail (and can't be opened) when false
    *   actions      optional { name: (el, ctx, event) => void }, triggered by
    *                data-action="toolId:name" (click), data-action-change (change), data-action-drop (file drop)
    */
@@ -91,6 +92,7 @@ window.TrainerHub = (function () {
    */
   function openForm({ title, intro, fields, submitLabel = "Save", onSubmit }) {
     const dialog = document.getElementById("dialog");
+    dialog.classList.remove("wide");
     const inputs = fields.map((f) => {
       const id = "field-" + f.name;
       const common = `id="${id}" name="${f.name}" ${f.required ? "required" : ""} placeholder="${esc(f.placeholder || "")}"`;
@@ -147,6 +149,7 @@ window.TrainerHub = (function () {
   /** Ask before something destructive. */
   function confirmAction({ title, message, confirmLabel = "Delete", onConfirm }) {
     const dialog = document.getElementById("dialog");
+    dialog.classList.remove("wide");
     dialog.innerHTML = `
       <div class="dialog-body">
         <h2>${esc(title)}</h2>
@@ -182,9 +185,25 @@ window.TrainerHub = (function () {
       <div class="fold-body">${body}</div>
     </details>`;
 
+  /** Show read-only content in the dialog (e.g. a table). */
+  function showDialog({ title, html, wide = false }) {
+    const dialog = document.getElementById("dialog");
+    dialog.classList.remove("wide");
+    dialog.classList.toggle("wide", wide);
+    dialog.innerHTML = `
+      <div class="dialog-body">
+        <h2>${esc(title)}</h2>
+        <div class="dialog-scroll">${html}</div>
+        <div class="btn-row end"><button type="button" class="btn secondary" data-close>Close</button></div>
+      </div>`;
+    dialog.querySelector("[data-close]").onclick = () => { dialog.close(); dialog.classList.remove("wide"); };
+    dialog.showModal();
+  }
+
   /** Ask the viewer to pick one of a few options. choices: [{ label, value, kind, current }] */
   function chooseAction({ title, message, choices, onChoose }) {
     const dialog = document.getElementById("dialog");
+    dialog.classList.remove("wide");
     dialog.innerHTML = `
       <div class="dialog-body">
         <h2>${esc(title)}</h2>
@@ -202,7 +221,7 @@ window.TrainerHub = (function () {
   }
 
   return {
-    tools, registerTool, CLASS_TYPES, fold, setFoldOpen, chooseAction,
+    tools, registerTool, CLASS_TYPES, fold, setFoldOpen, chooseAction, showDialog,
     esc, pill, icon, initials, plural, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };

@@ -7,19 +7,23 @@
   const { tools, data, esc, icon, store } = TrainerHub;
 
   let toolId = location.hash.slice(1) || store.get("tool", tools[0].id);
-  if (!tools.some((t) => t.id === toolId)) toolId = tools[0].id;
 
   const rail = document.getElementById("rail");
   const main = document.getElementById("main");
-  const currentTool = () => tools.find((t) => t.id === toolId);
+  // Tools this viewer may see (e.g. the Quiz Generator is trainer-only).
+  const visibleTools = () => tools.filter((t) => !t.visible || t.visible(context()));
+  const currentTool = () => {
+    const shown = visibleTools();
+    return shown.find((t) => t.id === toolId) || shown[0];
+  };
 
   const context = () => ({ data, rerender: () => render() });
 
   function renderRail() {
     rail.innerHTML =
       `<div class="logo" aria-hidden="true">TH</div>` +
-      tools.map((t) => `
-        <button class="rail-btn" data-tool="${t.id}" ${t.id === toolId ? 'aria-current="page"' : ""} title="${esc(t.name)}">
+      visibleTools().map((t) => `
+        <button class="rail-btn" data-tool="${t.id}" ${t.id === currentTool().id ? 'aria-current="page"' : ""} title="${esc(t.name)}">
           ${icon(t.icon)}<span>${esc(t.short)}</span>
         </button>`).join("") +
       `<div class="spacer"></div>`;
@@ -28,6 +32,9 @@
   // `animate` is true only when switching tools, so edits inside a page don't replay the fade.
   function render(animate = false) {
     const tool = currentTool();
+    // Keep keyboard focus (and the caret) in the same field across a re-render, e.g. while typing a search.
+    const focused = document.activeElement && document.activeElement.id && main.contains(document.activeElement)
+      ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
     renderRail();
     document.title = `${tool.name} · Trainer Hub`;
     main.innerHTML = `
@@ -37,6 +44,13 @@
       </header>
       ${browserCopyBanner()}
       <div class="${animate ? "fade-in" : ""}">${data.ready ? tool.render(context()) : notReady()}</div>`;
+    if (focused) {
+      const el = document.getElementById(focused.id);
+      if (el) {
+        el.focus();
+        try { if (focused.start != null) el.setSelectionRange(focused.start, focused.end); } catch { /* not a text field */ }
+      }
+    }
   }
 
   // Offer to bring over cohorts that were saved in this browser before the dashboard was shared.
@@ -101,6 +115,11 @@
     if (key) TrainerHub.setFoldOpen(key, e.target.open);
   }, true);
 
+  main.addEventListener("input", (e) => {
+    const spec = e.target.dataset && e.target.dataset.actionInput;
+    if (spec) runAction(spec, e.target, e);
+  });
+
   main.addEventListener("change", (e) => {
     const spec = e.target.dataset.actionChange;
     if (spec) runAction(spec, e.target, e);
@@ -127,7 +146,7 @@
 
   window.addEventListener("hashchange", () => {
     const id = location.hash.slice(1);
-    if (!tools.some((t) => t.id === id)) return;
+    if (!visibleTools().some((t) => t.id === id)) return;
     toolId = id;
     store.set("tool", id);
     render(true);
