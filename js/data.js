@@ -198,30 +198,41 @@
 
     /* ----- Attendance ----- */
     /*
-      One document per cohort per training day, written by the Slack routine:
-        { cohortId, date, channel, channelId, messageTs, postedAt, checkedAt,
-          records: { <traineeId>: { status: "present"|"late"|"absent", repliedAt, source: "slack"|"manual" } },
+      One document per cohort per training day, written by the Slack routines (see ATTENDANCE.md):
+        { cohortId, date, channel, channelId, messageTs, postedAt, checkedAt, recheckedAt,
+          records: { <traineeId>: { checkedIn, repliedAt, flag: "no-reply"|"possible-ncns",
+                                    source: "slack"|"manual", points, comment } },
           unmatched: [ { slackUserId, name, email, repliedAt, text } ] }
+      The routines set checkedIn/repliedAt/flag and never touch points or comment, nor a tick set by hand.
     */
     getAttendance(cohortId, date) {
       return state.attendance[attendanceKey(cohortId, date)];
     },
-    // A trainer's correction. status null clears it.
-    setMark(cohortId, date, traineeId, status) {
+    // A trainer's change to one trainee's day. fields: any of { checkedIn, points, comment }.
+    updateRecord(cohortId, date, traineeId, fields) {
       const key = attendanceKey(cohortId, date);
       const doc = state.attendance[key] || (state.attendance[key] = { cohortId, date, records: {}, unmatched: [] });
       doc.records ||= {};
-      if (status) doc.records[traineeId] = { ...(doc.records[traineeId] || {}), status, source: "manual" };
-      else delete doc.records[traineeId];
+      const r = { ...(doc.records[traineeId] || {}) };
+      if ("checkedIn" in fields) {
+        r.checkedIn = fields.checkedIn;
+        r.source = "manual"; // the Slack checks won't change a tick set by hand
+        delete r.flag;
+        delete r.status;
+      }
+      if ("points" in fields) { if (fields.points == null) delete r.points; else r.points = fields.points; }
+      if ("comment" in fields) { if (fields.comment) r.comment = fields.comment; else delete r.comment; }
+      doc.records[traineeId] = r;
       saveAttendance(doc);
     },
-    // Match a Slack reply nobody could be matched to.
+    // Match a Slack reply nobody could be matched to: that trainee is ticked as checked in.
     assignUnmatched(cohortId, date, index, traineeId) {
       const doc = state.attendance[attendanceKey(cohortId, date)];
       const reply = doc.unmatched[index];
-      const status = TrainerHub.schedule.statusForReply(reply.repliedAt) || "absent";
       doc.records ||= {};
-      doc.records[traineeId] = { status, repliedAt: reply.repliedAt, source: "manual" };
+      const r = { ...(doc.records[traineeId] || {}), checkedIn: true, repliedAt: reply.repliedAt, source: "manual" };
+      delete r.flag;
+      doc.records[traineeId] = r;
       doc.unmatched.splice(index, 1);
       saveAttendance(doc);
     },

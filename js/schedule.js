@@ -4,10 +4,21 @@
 */
 TrainerHub.schedule = (function () {
   const TIME_ZONE = "America/Chicago"; // Central time, switches between CDT and CST automatically
-  const POST_TIME = "6:55 AM";
-  const PRESENT_BY = 7 * 60;       // reply at 7:00 or earlier (minutes after midnight) = Present
-  const LATE_BY = 7 * 60 + 15;     // reply 7:01–7:15 = Late; no reply by then = Absent
+  const POST_TIME = "6:55 AM";     // Goodmorning message posted
+  const CHECK_TIME = "7:05 AM";    // replies so far are ticked
+  const RECHECK_TIME = "9:00 AM";  // late replies ticked; anyone still silent flagged "Possible NCNS"
+  const CHECK_AT = 7 * 60 + 5;     // the same times in minutes after midnight
+  const RECHECK_AT = 9 * 60;
   const TRAINING_DAYS = 20;        // 4 weeks, Monday to Friday
+
+  // Attendance penalty points, set by the trainer for each day. Time is how much of the shift was missed.
+  const POINTS = [
+    { value: 0.25, label: "0.25 · missed 0:11–2:15" },
+    { value: 0.5, label: "0.5 · missed 2:15–4:30" },
+    { value: 0.75, label: "0.75 · missed 4:30–6:45" },
+    { value: 1, label: "1 · missed 6:45–9:00" },
+    { value: 2, label: "2 · NCNS (no call, no show)" },
+  ];
 
   const pad = (n) => String(n).padStart(2, "0");
 
@@ -48,19 +59,8 @@ TrainerHub.schedule = (function () {
     return { days, today, phase: "running", index, isTrainingDay: days[index] === today };
   }
 
-  // Status for a reply sent at `moment`, judged in Central time; null if too late to count.
-  function statusForReply(moment) {
-    const { minutes } = central(moment);
-    if (minutes <= PRESENT_BY) return "present";
-    if (minutes <= LATE_BY) return "late";
-    return null;
-  }
-
-  // True once today's results are final (after the late cutoff).
-  const isPastCutoff = () => central().minutes > LATE_BY;
-
   const timeLabel = (moment) =>
     new Date(moment).toLocaleTimeString("en-US", { timeZone: TIME_ZONE, hour: "numeric", minute: "2-digit" });
 
-  return { TIME_ZONE, POST_TIME, PRESENT_BY, LATE_BY, TRAINING_DAYS, central, trainingDays, progress, statusForReply, isPastCutoff, timeLabel };
+  return { TIME_ZONE, POST_TIME, CHECK_TIME, RECHECK_TIME, CHECK_AT, RECHECK_AT, TRAINING_DAYS, POINTS, central, trainingDays, progress, timeLabel };
 })();

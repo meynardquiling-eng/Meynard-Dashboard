@@ -83,11 +83,13 @@ window.TrainerHub = (function () {
 
   /**
    * Open a form.
-   *   fields: [{ name, label, type: "text"|"email"|"date"|"url"|"textarea"|"select", value, required, placeholder, hint, options }]
-   *   (options is a list of strings, used by type "select")
+   *   fields: [{ name, label, type: "text"|"email"|"date"|"url"|"textarea"|"select"|"checkbox", value, required, placeholder, hint, options }]
+   *   options (type "select"): strings, or { value, label }. `emptyLabel` adds a selectable empty choice.
+   *   intro: optional line shown under the title.
+   *   Checkbox values come back as true/false; everything else as trimmed text.
    *   onSubmit(values) returns an error message to keep the form open, or nothing to close it.
    */
-  function openForm({ title, fields, submitLabel = "Save", onSubmit }) {
+  function openForm({ title, intro, fields, submitLabel = "Save", onSubmit }) {
     const dialog = document.getElementById("dialog");
     const inputs = fields.map((f) => {
       const id = "field-" + f.name;
@@ -96,9 +98,17 @@ window.TrainerHub = (function () {
       if (f.type === "textarea") {
         control = `<textarea ${common} rows="${f.rows || 4}">${esc(f.value || "")}</textarea>`;
       } else if (f.type === "select") {
-        const choose = `<option value="" disabled ${f.value ? "" : "selected"}>Choose…</option>`;
-        const opts = f.options.map((o) => `<option ${o === f.value ? "selected" : ""}>${esc(o)}</option>`).join("");
+        const has = f.value != null && f.value !== "";
+        const choose = f.emptyLabel != null
+          ? `<option value="" ${has ? "" : "selected"}>${esc(f.emptyLabel)}</option>`
+          : `<option value="" disabled ${has ? "" : "selected"}>Choose…</option>`;
+        const opts = f.options.map((o) => {
+          const { value, label } = typeof o === "object" ? o : { value: o, label: o };
+          return `<option value="${esc(value)}" ${has && String(value) === String(f.value) ? "selected" : ""}>${esc(label)}</option>`;
+        }).join("");
         control = `<select ${common}>${choose}${opts}</select>`;
+      } else if (f.type === "checkbox") {
+        return `<label class="form-check" for="${id}"><input type="checkbox" id="${id}" name="${f.name}" ${f.value ? "checked" : ""}><span>${esc(f.label)}</span></label>`;
       } else {
         control = `<input ${common} type="${f.type || "text"}" value="${esc(f.value || "")}" autocomplete="off">`;
       }
@@ -108,6 +118,7 @@ window.TrainerHub = (function () {
     dialog.innerHTML = `
       <form method="dialog" class="dialog-body" novalidate>
         <h2>${esc(title)}</h2>
+        ${intro ? `<p class="muted">${esc(intro)}</p>` : ""}
         ${inputs}
         <p class="form-error" role="alert"></p>
         <div class="btn-row end">
@@ -121,7 +132,8 @@ window.TrainerHub = (function () {
     dialog.querySelector("[data-close]").onclick = () => dialog.close();
     form.onsubmit = (e) => {
       e.preventDefault();
-      const values = Object.fromEntries(fields.map((f) => [f.name, form.elements[f.name].value.trim()]));
+      const values = Object.fromEntries(fields.map((f) => [f.name,
+        f.type === "checkbox" ? form.elements[f.name].checked : form.elements[f.name].value.trim()]));
       const missing = fields.find((f) => f.required && !values[f.name]);
       const message = missing ? `${missing.label} is required.` : onSubmit(values);
       if (message) { error.textContent = message; return; }
