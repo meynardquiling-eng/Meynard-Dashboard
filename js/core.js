@@ -87,7 +87,7 @@ window.TrainerHub = (function () {
       const control = f.type === "textarea"
         ? `<textarea ${common} rows="${f.rows || 4}">${esc(f.value || "")}</textarea>`
         : `<input ${common} type="${f.type || "text"}" value="${esc(f.value || "")}" autocomplete="off">`;
-      return `<label class="form-field" for="${id}"><span>${esc(f.label)}${f.required ? "" : ' <em>optional</em>'}</span>${control}${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</label>`;
+      return `<label class="form-field" for="${id}"><span>${esc(f.label)}</span>${control}${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</label>`;
     }).join("");
 
     dialog.innerHTML = `

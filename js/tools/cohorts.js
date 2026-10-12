@@ -9,24 +9,13 @@
   ];
 
   const teamLeadFields = (tl, required = true) => [
-    { name: "tlName", label: "Team Lead name", required, value: tl && tl.name, placeholder: "e.g. Carla Mendoza" },
-    { name: "tlEmail", label: "Team Lead work email", type: "email", value: tl && tl.email, placeholder: "name@company.com" },
+    { name: "tlName", label: "Team Lead", required, value: tl && tl.name, placeholder: "e.g. Carla Mendoza" },
   ];
 
-  // Turns the Team Lead form fields into { name, email } (or null), or returns an error message.
-  function readTeamLead(v) {
-    if (!v.tlName && !v.tlEmail) return { teamLead: null };
-    if (!v.tlName) return { error: "Add the Team Lead's name, or clear the email." };
-    if (v.tlEmail && !isEmail(v.tlEmail)) return { error: `"${v.tlEmail}" doesn't look like an email address.` };
-    return { teamLead: { name: v.tlName, email: v.tlEmail } };
-  }
+  const readTeamLead = (v) => (v.tlName ? { name: v.tlName } : null);
 
-  // Cohort form values -> cohort fields, or an error message.
-  function readCohort(v) {
-    const { teamLead, error } = readTeamLead(v);
-    if (error) return { error };
-    return { cohort: { name: v.name, startDate: v.startDate, notes: v.notes, teamLead } };
-  }
+  // Cohort form values -> cohort fields.
+  const readCohort = (v) => ({ name: v.name, startDate: v.startDate, notes: v.notes, teamLead: readTeamLead(v) });
 
   function teamLeadRow(c) {
     if (!c.teamLead) {
@@ -39,7 +28,6 @@
         <span class="min0">
           <span class="tl-label">Team Lead</span>
           <strong class="ellipsis">${esc(tl.name)}</strong>
-          ${tl.email ? `<a class="small ellipsis" href="mailto:${esc(tl.email)}">${esc(tl.email)}</a>` : ""}
         </span>
         <span class="row-actions">
           <button class="link-btn" data-action="cohorts:teamLead" data-cohort="${c.id}" aria-label="Change Team Lead">Change</button>
@@ -138,9 +126,7 @@
         openForm({
           title: "Add cohort", submitLabel: "Add cohort", fields: cohortFields(),
           onSubmit(v) {
-            const { cohort, error } = readCohort(v);
-            if (error) return error;
-            ctx.data.addCohort(cohort);
+            ctx.data.addCohort(readCohort(v));
             ctx.rerender();
             toast(`${v.name} added`);
           },
@@ -151,9 +137,7 @@
         openForm({
           title: "Edit cohort", fields: cohortFields(cohort),
           onSubmit(v) {
-            const { cohort: fields, error } = readCohort(v);
-            if (error) return error;
-            ctx.data.updateCohort(cohort.id, fields);
+            ctx.data.updateCohort(cohort.id, readCohort(v));
             ctx.rerender();
           },
         });
@@ -180,8 +164,7 @@
           submitLabel: "Save Team Lead",
           fields: teamLeadFields(cohort.teamLead),
           onSubmit(v) {
-            const { teamLead, error } = readTeamLead(v);
-            if (error) return error;
+            const teamLead = readTeamLead(v);
             ctx.data.updateCohort(cohort.id, { teamLead });
             ctx.rerender();
             toast(`${teamLead.name} is Team Lead for ${cohort.name}`);

@@ -52,7 +52,7 @@
     get cohorts() { return state.cohorts; },
     getCohort: findCohort,
 
-    // teamLead is { name, email } or null.
+    // teamLead is { name } or null.
     addCohort({ name, startDate, notes, teamLead = null }) {
       const cohort = { id: uid(), name, startDate, notes, teamLead, trainees: [], createdAt: new Date().toISOString() };
       state.cohorts.push(cohort);

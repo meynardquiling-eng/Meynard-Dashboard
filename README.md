@@ -4,7 +4,7 @@ A dashboard for trainers. A rail on the left switches between tools.
 
 | Tool | What it does |
 | --- | --- |
-| Cohorts | One tile per cohort. Add, edit and delete cohorts. Assign a Team Lead (name + work email). Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
+| Cohorts | One tile per cohort. Add, edit and delete cohorts. Assign a Team Lead. Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
 | Attendance Checker | A tile for each cohort listing its trainees, pulled from the Cohorts tab. The tracker itself comes later. |
 | Quiz Generator | Empty for now. |
 | Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
