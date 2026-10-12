@@ -1,5 +1,5 @@
 (function () {
-  const { esc, plural, formatDate, isEmail, openForm, confirmAction, toast } = TrainerHub;
+  const { esc, initials, plural, formatDate, isEmail, openForm, confirmAction, toast } = TrainerHub;
 
   const cohortFields = (c = {}) => [
     { name: "name", label: "Cohort name", required: true, value: c.name, placeholder: "e.g. Care Wave 15" },
@@ -19,25 +19,20 @@
     if (taken) return `${email} is already in ${cohort.name}.`;
   }
 
-  function traineeTable(cohort) {
+  function traineeList(cohort) {
     if (!cohort.trainees.length) {
-      return `<div class="empty">No trainees yet. Use <strong>Add trainee</strong> or <strong>Paste a list</strong>.</div>`;
+      return `<div class="empty">No trainees yet.</div>`;
     }
-    const rows = cohort.trainees.map((t, i) => `
-      <tr>
-        <td class="num muted">${i + 1}</td>
-        <td><strong>${esc(t.name)}</strong></td>
-        <td><a href="mailto:${esc(t.email)}">${esc(t.email)}</a></td>
-        <td class="actions">
-          <button class="link-btn" data-action="cohorts:editTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}">Edit</button>
-          <button class="link-btn danger" data-action="cohorts:deleteTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}">Remove</button>
-        </td>
-      </tr>`).join("");
-    return `
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>#</th><th>Name</th><th>Work Gmail</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>`;
+    const items = cohort.trainees.map((t) => `
+      <li>
+        <span class="avatar">${esc(initials(t.name))}</span>
+        <span class="min0"><strong class="ellipsis">${esc(t.name)}</strong><a class="small ellipsis" href="mailto:${esc(t.email)}">${esc(t.email)}</a></span>
+        <span class="row-actions">
+          <button class="link-btn" data-action="cohorts:editTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}" aria-label="Edit ${esc(t.name)}">Edit</button>
+          <button class="link-btn danger" data-action="cohorts:deleteTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}" aria-label="Remove ${esc(t.name)}">Remove</button>
+        </span>
+      </li>`).join("");
+    return `<ul class="people scroll">${items}</ul>`;
   }
 
   TrainerHub.registerTool({
@@ -66,25 +61,34 @@
           </div>`;
       }
 
-      const cards = cohorts.map((c) => `
-        <section class="card cohort-card">
-          <header class="cohort-head">
+      const tiles = cohorts.map((c) => `
+        <section class="card tile">
+          <header class="tile-head">
             <div class="min0">
               <h2>${esc(c.name)}</h2>
-              <div class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) + " · " : ""}${plural(c.trainees.length, "trainee")}</div>
-              ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
+              <div class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</div>
             </div>
-            <div class="btn-row">
-              <button class="btn" data-action="cohorts:addTrainee" data-cohort="${c.id}">+ Add trainee</button>
-              <button class="btn secondary" data-action="cohorts:bulkAdd" data-cohort="${c.id}">Paste a list</button>
-              <button class="btn secondary" data-action="cohorts:edit" data-cohort="${c.id}">Edit</button>
-              <button class="btn secondary danger-text" data-action="cohorts:delete" data-cohort="${c.id}">Delete</button>
-            </div>
+            <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
           </header>
-          ${traineeTable(c)}
+          ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
+          ${traineeList(c)}
+          <div class="btn-row">
+            <button class="btn" data-action="cohorts:addTrainee" data-cohort="${c.id}">+ Add trainee</button>
+            <button class="btn secondary" data-action="cohorts:bulkAdd" data-cohort="${c.id}">Paste a list</button>
+          </div>
+          <footer class="tile-foot">
+            <button class="link-btn" data-action="cohorts:edit" data-cohort="${c.id}">Edit cohort</button>
+            <button class="link-btn danger" data-action="cohorts:delete" data-cohort="${c.id}">Delete cohort</button>
+          </footer>
         </section>`).join("");
 
-      return toolbar + `<div class="stack">${cards}</div>`;
+      const addTile = `
+        <button class="add-tile" data-action="cohorts:add">
+          <span class="plus">+</span>
+          <strong>Add cohort</strong>
+        </button>`;
+
+      return toolbar + `<div class="tiles">${tiles}${addTile}</div>`;
     },
 
     actions: {

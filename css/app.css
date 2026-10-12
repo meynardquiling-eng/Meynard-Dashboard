@@ -111,13 +111,26 @@ a { color: var(--primary); }
 .empty.big strong { color: var(--fg); font-size: 16px; }
 .empty.big .btn { margin-top: 6px; }
 
-/* ---------- Cohorts ---------- */
-.cohort-card { display: grid; gap: 14px; }
-.cohort-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.cohort-head .notes { margin-top: 6px; color: var(--muted); font-size: 13px; white-space: pre-line; max-width: 70ch; }
+/* ---------- Cohort tiles ---------- */
+.tile .notes { color: var(--muted); font-size: 13px; white-space: pre-line; }
+.tile-foot { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.people.scroll { max-height: 320px; overflow-y: auto; }
+.people li > .min0 { flex: 1; }
+.people a { color: var(--muted); text-decoration: none; }
+.people a:hover { color: var(--primary); text-decoration: underline; }
+.row-actions { display: flex; flex: none; opacity: 0; transition: opacity 0.15s; }
+.people li:hover .row-actions, .people li:focus-within .row-actions { opacity: 1; }
+@media (hover: none) { .row-actions { opacity: 1; } }
+.add-tile {
+  display: grid; place-items: center; align-content: center; gap: 6px; min-height: 180px;
+  border: 1.5px dashed var(--line); border-radius: var(--r-lg); color: var(--muted);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.add-tile .plus { font-size: 28px; line-height: 1; }
+.add-tile:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
 
 /* ---------- Attendance tiles ---------- */
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-items: start; }
 .tile { display: grid; gap: 12px; border-top: 3px solid var(--primary); }
 .tile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .tile .link-btn { justify-self: start; }
