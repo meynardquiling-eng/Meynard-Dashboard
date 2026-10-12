@@ -34,6 +34,7 @@
               <div class="min0">
                 <h2>${esc(c.name)}</h2>
                 <div class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</div>
+                ${c.teamLead ? `<div class="small">Team Lead: <strong>${esc(c.teamLead.name)}</strong></div>` : ""}
               </div>
               <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
             </header>

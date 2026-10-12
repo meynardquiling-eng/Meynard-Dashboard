@@ -4,8 +4,49 @@
   const cohortFields = (c = {}) => [
     { name: "name", label: "Cohort name", required: true, value: c.name, placeholder: "e.g. Care Wave 15" },
     { name: "startDate", label: "Start date", type: "date", value: c.startDate },
-    { name: "notes", label: "Notes", type: "textarea", rows: 3, value: c.notes, placeholder: "Schedule, team lead, anything to remember" },
+    ...teamLeadFields(c.teamLead, false),
+    { name: "notes", label: "Notes", type: "textarea", rows: 3, value: c.notes, placeholder: "Schedule, anything to remember" },
   ];
+
+  const teamLeadFields = (tl, required = true) => [
+    { name: "tlName", label: "Team Lead name", required, value: tl && tl.name, placeholder: "e.g. Carla Mendoza" },
+    { name: "tlEmail", label: "Team Lead work email", type: "email", value: tl && tl.email, placeholder: "name@company.com" },
+  ];
+
+  // Turns the Team Lead form fields into { name, email } (or null), or returns an error message.
+  function readTeamLead(v) {
+    if (!v.tlName && !v.tlEmail) return { teamLead: null };
+    if (!v.tlName) return { error: "Add the Team Lead's name, or clear the email." };
+    if (v.tlEmail && !isEmail(v.tlEmail)) return { error: `"${v.tlEmail}" doesn't look like an email address.` };
+    return { teamLead: { name: v.tlName, email: v.tlEmail } };
+  }
+
+  // Cohort form values -> cohort fields, or an error message.
+  function readCohort(v) {
+    const { teamLead, error } = readTeamLead(v);
+    if (error) return { error };
+    return { cohort: { name: v.name, startDate: v.startDate, notes: v.notes, teamLead } };
+  }
+
+  function teamLeadRow(c) {
+    if (!c.teamLead) {
+      return `<button class="link-btn tl-add" data-action="cohorts:teamLead" data-cohort="${c.id}">+ Add Team Lead</button>`;
+    }
+    const tl = c.teamLead;
+    return `
+      <div class="tl">
+        <span class="avatar tl-avatar" title="Team Lead">${esc(initials(tl.name))}</span>
+        <span class="min0">
+          <span class="tl-label">Team Lead</span>
+          <strong class="ellipsis">${esc(tl.name)}</strong>
+          ${tl.email ? `<a class="small ellipsis" href="mailto:${esc(tl.email)}">${esc(tl.email)}</a>` : ""}
+        </span>
+        <span class="row-actions">
+          <button class="link-btn" data-action="cohorts:teamLead" data-cohort="${c.id}" aria-label="Change Team Lead">Change</button>
+          <button class="link-btn danger" data-action="cohorts:removeTeamLead" data-cohort="${c.id}" aria-label="Remove Team Lead">Remove</button>
+        </span>
+      </div>`;
+  }
 
   const traineeFields = (t = {}) => [
     { name: "name", label: "Full name", required: true, value: t.name, placeholder: "e.g. Ana Reyes" },
@@ -39,7 +80,7 @@
     id: "cohorts",
     name: "Cohorts",
     short: "Cohorts",
-    description: "Create cohorts and add their trainees.",
+    description: "Create cohorts, assign a Team Lead and add trainees.",
     icon: '<path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="7" r="3.5"/><path d="M22 19v-1a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
 
     render(ctx) {
@@ -70,6 +111,7 @@
             </div>
             <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
           </header>
+          ${teamLeadRow(c)}
           ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
           ${traineeList(c)}
           <div class="btn-row">
@@ -96,7 +138,9 @@
         openForm({
           title: "Add cohort", submitLabel: "Add cohort", fields: cohortFields(),
           onSubmit(v) {
-            ctx.data.addCohort(v);
+            const { cohort, error } = readCohort(v);
+            if (error) return error;
+            ctx.data.addCohort(cohort);
             ctx.rerender();
             toast(`${v.name} added`);
           },
@@ -107,7 +151,9 @@
         openForm({
           title: "Edit cohort", fields: cohortFields(cohort),
           onSubmit(v) {
-            ctx.data.updateCohort(cohort.id, v);
+            const { cohort: fields, error } = readCohort(v);
+            if (error) return error;
+            ctx.data.updateCohort(cohort.id, fields);
             ctx.rerender();
           },
         });
@@ -124,6 +170,33 @@
             ctx.data.deleteCohort(cohort.id);
             ctx.rerender();
             toast(`${cohort.name} deleted`);
+          },
+        });
+      },
+      teamLead(el, ctx) {
+        const cohort = ctx.data.getCohort(el.dataset.cohort);
+        openForm({
+          title: `${cohort.teamLead ? "Change" : "Add"} Team Lead for ${cohort.name}`,
+          submitLabel: "Save Team Lead",
+          fields: teamLeadFields(cohort.teamLead),
+          onSubmit(v) {
+            const { teamLead, error } = readTeamLead(v);
+            if (error) return error;
+            ctx.data.updateCohort(cohort.id, { teamLead });
+            ctx.rerender();
+            toast(`${teamLead.name} is Team Lead for ${cohort.name}`);
+          },
+        });
+      },
+      removeTeamLead(el, ctx) {
+        const cohort = ctx.data.getCohort(el.dataset.cohort);
+        confirmAction({
+          title: `Remove ${cohort.teamLead.name} as Team Lead?`,
+          message: `${cohort.name} will have no Team Lead.`,
+          confirmLabel: "Remove",
+          onConfirm() {
+            ctx.data.updateCohort(cohort.id, { teamLead: null });
+            ctx.rerender();
           },
         });
       },
