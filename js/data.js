@@ -20,8 +20,11 @@
     attendance: {}, // "<cohortId>_<date>" -> attendance document
     // Who is viewing. manageClasses = may run the Quiz Generator (editors and the owner of the shared dashboard).
     perms: { manageClasses: false, userId: null },
-    quizConfig: null,   // { controlSheetId, requestsFolderId } — not secrets
-    quizRequests: [],   // dashboard-side record of submitted quiz requests (no answers, no scores)
+    // Quiz Generator, editors only (db rules make these unreadable to anyone else):
+    quizConfig: null,      // quiz/config     { controlSheetId, exportFolderId } — not secrets
+    slackDirectory: {},    // quiz/directory  { "<email>": { userId, status: "found"|"not-found"|"error", error, checkedAt } }
+    quizGenerations: [],   // quizGenerations/<genId>  one per Generate click: class, day, topics, length (never overwritten)
+    quizzes: {},           // quizzes/<genId>_<traineeId>  questions + answer key, delivery, submission, result
   };
   const listeners = [];
   const notify = () => listeners.forEach((fn) => fn());
@@ -86,7 +89,6 @@
     state.materials = store.get("materials", []);
     state.attendance = store.get("attendance", {});
     state.quizConfig = store.get("quizConfig", null);
-    state.quizRequests = store.get("quizRequests", []);
     notify();
   }
 
@@ -134,9 +136,17 @@
         state.quizConfig = snap.exists ? clone(snap.data()) : null;
         notify();
       }, onError);
-      db.collection("quizRequests").onSnapshot((snap) => {
-        state.quizRequests = snap.docs.map((d) => clone(d.data()))
+      db.doc("quiz/directory").onSnapshot((snap) => {
+        state.slackDirectory = snap.exists ? clone(snap.data()) : {};
+        notify();
+      }, onError);
+      db.collection("quizGenerations").onSnapshot((snap) => {
+        state.quizGenerations = snap.docs.map((d) => clone(d.data()))
           .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+        notify();
+      }, onError);
+      db.collection("quizzes").onSnapshot((snap) => {
+        state.quizzes = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
         notify();
       }, onError);
     }
@@ -267,28 +277,47 @@
       saveAttendance(doc);
     },
 
-    /* ----- Quiz Generator (dashboard side only: settings and request records) ----- */
+    /* ----- Quiz Generator (shared dashboard, editors only) ----- */
     get quizConfig() { return state.quizConfig; },
     saveQuizConfig(cfg) {
       state.quizConfig = { ...cfg, updatedAt: new Date().toISOString() };
       if (db) return write("quiz/config", () => db.doc("quiz/config").set(clone(state.quizConfig)));
       store.set("quizConfig", state.quizConfig);
     },
-    get quizRequests() { return state.quizRequests; },
-    saveQuizRequest(req) {
-      const i = state.quizRequests.findIndex((r) => r.requestId === req.requestId);
-      if (i >= 0) state.quizRequests[i] = req; else state.quizRequests.unshift(req);
-      if (db) return write("quizRequests/" + req.requestId, () => db.doc("quizRequests/" + req.requestId).set(clone(req)));
-      store.set("quizRequests", state.quizRequests);
+    get slackDirectory() { return state.slackDirectory; },
+    // entries: { "<email>": { userId, status, error, checkedAt } } merged into the directory.
+    saveSlackDirectory(entries) {
+      Object.assign(state.slackDirectory, entries);
+      notify();
+      if (db) return write("quiz/directory", () => db.doc("quiz/directory").set(clone(state.slackDirectory)));
+    },
+    get quizGenerations() { return state.quizGenerations; },
+    saveQuizGeneration(gen) {
+      const i = state.quizGenerations.findIndex((g) => g.id === gen.id);
+      if (i >= 0) state.quizGenerations[i] = gen; else state.quizGenerations.unshift(gen);
+      notify();
+      if (db) return write("quizGenerations/" + gen.id, () => db.doc("quizGenerations/" + gen.id).set(clone(gen)));
+    },
+    quizzesFor(genId) {
+      return Object.values(state.quizzes).filter((q) => q.generationId === genId);
+    },
+    getQuiz(genId, traineeId) { return state.quizzes[`${genId}_${traineeId}`]; },
+    saveQuiz(quiz) {
+      const key = `${quiz.generationId}_${quiz.traineeId}`;
+      state.quizzes[key] = quiz;
+      notify();
+      if (db) return write("quizzes/" + key, () => db.doc("quizzes/" + key).set(clone(quiz)));
     },
     /**
-     * Calls a Google Drive connector tool as the viewer. Resolves the tool result; rejects with
+     * Calls a connector tool as the viewer ("Google Drive" or "Slack"). Resolves the tool result; rejects with
      * { code, message } (codes from the claude.ai connector runtime, plus "no_connector").
      */
-    async drive(tool, input) {
-      if (!mcp) throw { code: "no_connector", message: "Google Drive access is only available in the shared dashboard." };
-      return mcp.callTool("Google Drive", tool, input, { cache: false });
+    async connector(server, tool, input) {
+      if (!mcp) throw { code: "no_connector", message: `${server} access is only available in the shared dashboard.` };
+      return mcp.callTool(server, tool, input, { cache: false });
     },
+    drive(tool, input) { return this.connector("Google Drive", tool, input); },
+    slack(tool, input) { return this.connector("Slack", tool, input); },
 
     /* ----- Courseware materials ----- */
     get materials() { return state.materials; },

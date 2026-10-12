@@ -410,3 +410,4 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .table.answers td { white-space: normal; vertical-align: top; }
 .topic.is-locked { opacity: 0.55; }
 .quiz-settings { display: grid; gap: 12px; }
+.slack-preview { white-space: pre-wrap; font: 13px/1.5 "Geist Mono", ui-monospace, monospace; background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0 0 10px; max-height: 50vh; overflow: auto; }

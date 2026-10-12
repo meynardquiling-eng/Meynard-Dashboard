@@ -147,7 +147,7 @@ window.TrainerHub = (function () {
   }
 
   /** Ask before something destructive. */
-  function confirmAction({ title, message, confirmLabel = "Delete", onConfirm }) {
+  function confirmAction({ title, message, confirmLabel = "Delete", confirmKind = "danger", onConfirm }) {
     const dialog = document.getElementById("dialog");
     dialog.classList.remove("wide");
     dialog.innerHTML = `
@@ -156,7 +156,7 @@ window.TrainerHub = (function () {
         <p>${esc(message)}</p>
         <div class="btn-row end">
           <button type="button" class="btn secondary" data-close>Cancel</button>
-          <button type="button" class="btn danger" data-ok>${esc(confirmLabel)}</button>
+          <button type="button" class="btn ${confirmKind}" data-ok>${esc(confirmLabel)}</button>
         </div>
       </div>`;
     dialog.querySelector("[data-close]").onclick = () => dialog.close();

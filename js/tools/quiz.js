@@ -1,42 +1,71 @@
 /*
   Quiz Generator (trainer-only).
 
-  The dashboard never builds, sends or grades quizzes. It:
-    1. reads the Control Sheet (Question Bank, Generated Links, Results, Request Log, Slack Directory)
-       by downloading it as XLSX through the viewer's Google Drive connector and parsing it with SheetJS;
-    2. writes a new, small JSON request file into the Requests folder (it never edits an existing one);
-    3. records each request in the artifact database (quizRequests) for status and double-click protection.
-  The Apps Script backend (quiz/Code.gs) does the rest. See QUIZ.md.
+  Everything runs in this page, as the trainer, through their own claude.ai connectors:
+    Google Drive  reads the Control Sheet's "Question Bank" tab (downloaded as XLSX, parsed with SheetJS)
+                  and creates the results spreadsheet on Export.
+    Slack         finds each trainee's Slack account by work email, sends each trainee their own quiz
+                  as a DM from the trainer's account, and reads the trainee's reply on Refresh.
+  Quizzes, answer keys, answers and scores are saved in the dashboard database, readable by editors only.
+  The quiz logic (randomizing, message text, reading and grading replies) is in js/quiz-engine.js.
+  See QUIZ.md.
 */
 (function () {
-  const { esc, plural, classTypePill, toast } = TrainerHub;
+  const { esc, plural, classTypePill, toast, isEmail } = TrainerHub;
   const S = TrainerHub.schedule;
+  const E = TrainerHub.quizEngine;
 
   const REGULAR = { min: 10, max: 20, default: 15 };
   const WEEKLY = { length: 50, topic: "Weekly Quiz" };
   const CLASS_PAGE = 6;
   const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  const LETTERS = ["A", "B", "C", "D"];
+  const REMINDER = (day) => `Reminder: your Day ${day} quiz is waiting in the message above. Reply with all your answers in one message, like \`1A 2C 3B\`.`;
 
   // UI state for this tab (per viewer, not saved).
   const ui = {
     topics: new Set(), weekly: false, topicQuery: "",
     classId: null, classQuery: "", myOnly: false, page: 0,
     day: null, length: REGULAR.default,
-    submitting: false, lastSubmit: null,
+    busy: null,            // what's running: "check" | "generate" | "refresh" | "send" | "export" | "test"
+    progress: null,        // { done, total }
+    lastSubmit: null,      // { genId, day }
     showDay: null, generationId: null,
-    sheet: { status: "idle", data: null, error: null, loadedAt: null },
+    selfId: null,          // the trainer's own Slack user id
+    exportLinks: {},       // "<classId>_<day>" -> spreadsheet link
+    sheet: { status: "idle", bank: null, error: null, loadedAt: null },
   };
+
+  /* ---------------------------------------------------------------- errors */
+
+  function connectorErrorText(server, e) {
+    switch (e && e.code) {
+      case "no_connector": return e.message;
+      case "server_not_connected": return `${server} isn't connected. Add it in claude.ai Settings → Connectors, then reload.`;
+      case "needs_reauth": return `${server} needs to be reconnected. Reconnect it in claude.ai Settings → Connectors.`;
+      case "not_in_manifest": return `${server} access was declined for this dashboard. Allow it in the dashboard's permissions, then reload.`;
+      case "selection_required": return `Choose which ${server} connection to use when claude.ai asks, then try again.`;
+      case "blocked_by_policy": return `Your organization's policy blocks ${server} here.`;
+      case "server_unavailable": return `${server} didn't respond. Try again in a moment.`;
+      case "upstream_error": return `${server} had a problem. Try again in a moment.`;
+      case "tool_error": return `${server} reported an error: ${e.message || "unknown"}.`;
+      case "bad_sheet": return e.message;
+      default: return `Couldn't reach ${server}` + (e && e.message ? ": " + e.message : ".");
+    }
+  }
+  const slackError = (e) => connectorErrorText("Slack", e);
+  const driveError = (e) => connectorErrorText("Google Drive", e);
+  // A send that failed this way may still have gone out.
+  const ambiguous = (e) => e && (e.code === "server_unavailable" || e.code === "upstream_error");
+  const FATAL = ["server_not_connected", "needs_reauth", "not_in_manifest", "blocked_by_policy", "no_connector"];
 
   /* ---------------------------------------------------------------- reading the Control Sheet */
 
   // Finds the base64 file bytes in a download_file_content result (the connector's exact shape isn't documented).
   function extractBase64(result) {
     const candidates = [];
-    const take = (v) => { if (typeof v === "string") candidates.push(v); };
     const walk = (v, depth) => {
       if (!v || depth > 3) return;
-      if (typeof v === "string") { take(v); try { walk(JSON.parse(v), depth + 1); } catch { /* not JSON */ } return; }
+      if (typeof v === "string") { candidates.push(v); try { walk(JSON.parse(v), depth + 1); } catch { /* not JSON */ } return; }
       if (typeof v === "object") for (const k of Object.keys(v)) walk(v[k], depth + 1);
     };
     walk(result && result.payload, 0);
@@ -46,52 +75,11 @@
     return hit ? hit.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/") : null;
   }
 
-  function validQuestion(r) {
-    const filled = LETTERS.filter((L) => String(r["Choice " + L] || "").trim() !== "");
-    const correct = String(r["Correct answer"] || "").trim().toUpperCase();
-    const active = ["", "true", "yes", "1"].includes(String(r["Active"]).trim().toLowerCase());
-    return active && String(r["Topic"] || "").trim() && String(r["Question"] || "").trim()
-      && filled.length >= 2 && filled.includes(correct);
-  }
-
   function parseWorkbook(b64) {
     const wb = XLSX.read(b64, { type: "base64" });
-    const rows = (name) => (wb.Sheets[name] ? XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: "", raw: false }) : null);
-    const bank = rows("Question Bank");
-    if (!bank) throw { code: "bad_sheet", message: 'The Control Sheet has no "Question Bank" tab. Run setupControlSheet() in Apps Script.' };
-    const topics = {};
-    let invalid = 0;
-    for (const r of bank) {
-      const name = String(r["Topic"] || "").trim();
-      if (!name) continue;
-      const t = topics[name] || (topics[name] = { name, category: String(r["Category"] || "").trim() || "General", eligible: 0 });
-      if (validQuestion(r)) t.eligible++; else invalid++;
-    }
-    const directory = {};
-    for (const r of rows("Slack Directory") || []) directory[String(r["Email"]).toLowerCase()] = r;
-    return {
-      topics: Object.values(topics).sort((a, b) => a.name.localeCompare(b.name)),
-      invalid,
-      links: rows("Generated Links") || [],
-      results: rows("Results") || [],
-      log: rows("Request Log") || [],
-      directory,
-    };
-  }
-
-  function driveErrorText(e) {
-    switch (e && e.code) {
-      case "no_connector": return e.message;
-      case "server_not_connected": return "Google Drive isn't connected. Add it in claude.ai Settings → Connectors, then reload.";
-      case "needs_reauth": return "Google Drive needs to be reconnected. Reconnect it in claude.ai Settings → Connectors.";
-      case "not_in_manifest": return "Google Drive access was declined for this dashboard. Allow it in the dashboard's permissions, then reload.";
-      case "selection_required": return "Choose which Google Drive connection to use when claude.ai asks, then reload.";
-      case "blocked_by_policy": return "Your organization's policy blocks Google Drive here.";
-      case "server_unavailable": return "Google Drive didn't respond. Try again in a moment.";
-      case "tool_error": return "Google Drive reported an error: " + (e.message || "unknown") + ". Check the IDs in Quiz settings and that you can open the files.";
-      case "bad_sheet": return e.message;
-      default: return "Couldn't reach Google Drive" + (e && e.message ? ": " + e.message : ".");
-    }
+    const sheet = wb.Sheets["Question Bank"];
+    if (!sheet) throw { code: "bad_sheet", message: 'The Control Sheet has no "Question Bank" tab. Copy the headers from quiz/question-bank-template.csv into a tab with that name.' };
+    return E.readBank(XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false }));
   }
 
   async function loadSheet(ctx) {
@@ -102,12 +90,12 @@
     try {
       const result = await ctx.data.drive("download_file_content", { fileId: cfg.controlSheetId, exportMimeType: XLSX_MIME });
       const b64 = extractBase64(result);
-      if (!b64) throw { code: "tool_error", message: "the download didn't contain a spreadsheet" };
+      if (!b64) throw { code: "tool_error", message: "the download didn't contain a spreadsheet. Check the Control Sheet link" };
       if (typeof XLSX === "undefined") throw { code: "bad_sheet", message: "The spreadsheet reader (SheetJS) didn't load. Check your connection and reload." };
-      ui.sheet = { status: "ready", data: parseWorkbook(b64), error: null, loadedAt: new Date() };
+      ui.sheet = { status: "ready", bank: parseWorkbook(b64), error: null, loadedAt: new Date() };
     } catch (e) {
       console.warn("quiz: load control sheet", e && e.code);
-      ui.sheet = { ...ui.sheet, status: "error", error: driveErrorText(e) };
+      ui.sheet = { ...ui.sheet, status: "error", error: driveError(e) };
     }
     ctx.rerender();
   }
@@ -119,17 +107,18 @@
     const m = s.match(/\/d\/([A-Za-z0-9_-]{10,})/) || s.match(/folders\/([A-Za-z0-9_-]{10,})/) || s.match(/[?&]id=([A-Za-z0-9_-]{10,})/);
     return m ? m[1] : s;
   };
-  const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || ""));
+  const normEmail = (v) => String(v || "").trim().toLowerCase();
   const shortDate = (date) => new Date(date + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
-  const stamp = (v) => (v ? String(v) : "");
+  const fmtAt = (iso) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 
-  function slackStatus(sheet, email) {
-    if (!isEmail(email)) return { ok: false, label: "Missing email", kind: "bad" };
-    const r = sheet && sheet.directory[String(email).toLowerCase()];
-    if (!r) return { ok: false, label: "Not checked", kind: "mute" };
-    if (r["Status"] === "Found") return { ok: true, label: "Slack ✓", kind: "ok" };
-    if (r["Status"] === "Dry run") return { ok: true, label: "Dry run", kind: "warn" };
-    return { ok: false, label: "Not found", kind: "bad", detail: r["Error"] };
+  function slackStatus(ctx, email) {
+    if (!isEmail(email)) return { ok: false, label: "Missing email", kind: "bad", detail: "No valid work email in Cohorts." };
+    const r = ctx.data.slackDirectory[normEmail(email)];
+    if (!r) return { ok: false, label: "Not checked", kind: "mute", detail: "Slack account not matched yet. Use “Check Slack accounts”." };
+    if (r.status === "found") return { ok: true, label: "Slack ✓", kind: "ok", userId: r.userId };
+    if (r.status === "not-found") return { ok: false, label: "Not found", kind: "bad", detail: r.error };
+    return { ok: false, label: "Check failed", kind: "warn", detail: r.error };
   }
 
   // Which training day the quiz is for: today if it's a training day, otherwise the trainer must pick.
@@ -142,30 +131,279 @@
     return { options, today, needsPick: !today };
   }
 
-  function poolSize(sheet) {
-    if (!sheet) return 0;
-    if (ui.weekly) return sheet.topics.reduce((n, t) => n + t.eligible, 0);
-    return sheet.topics.filter((t) => ui.topics.has(t.name)).reduce((n, t) => n + t.eligible, 0);
-  }
+  const pool = (bank) => (bank ? E.questionPool(bank.questions, { weekly: ui.weekly, topics: [...ui.topics] }) : []);
+  const quizLength = () => (ui.weekly ? WEEKLY.length : ui.length);
+  const lengthOk = () => ui.weekly || (Number.isInteger(ui.length) && ui.length >= REGULAR.min && ui.length <= REGULAR.max);
 
-  function blockers(ctx, cohort, sheet) {
+  function blockers(ctx, cohort, bank) {
     const out = [];
     if (!ctx.data.perms.manageClasses) out.push("You need permission to manage classes.");
-    if (!sheet) out.push("Load the Control Sheet.");
+    if (!bank) out.push("Load the Control Sheet.");
     if (!ui.weekly && !ui.topics.size) out.push("Pick at least one topic, or the Weekly Quiz.");
     if (!cohort) out.push("Pick a class.");
     if (cohort) {
       const d = dayInfo(cohort);
       if (d.error) out.push(d.error);
       else if (!ui.day) out.push("Pick the training day.");
-      const ready = cohort.trainees.filter((t) => slackStatus(sheet, t.email).ok).length;
-      if (!ready) out.push("No trainee has a matched Slack account yet. Use “Check Slack accounts”.");
+      if (!cohort.trainees.some((t) => slackStatus(ctx, t.email).ok)) out.push("No trainee has a matched Slack account yet. Use “Check Slack accounts”.");
     }
-    const length = ui.weekly ? WEEKLY.length : ui.length;
-    if (!ui.weekly && !(Number.isInteger(length) && length >= REGULAR.min && length <= REGULAR.max)) out.push(`Quiz length must be ${REGULAR.min}–${REGULAR.max}.`);
-    if (sheet && (ui.weekly || ui.topics.size) && poolSize(sheet) < length) out.push(`Only ${poolSize(sheet)} eligible questions in your selection; ${length} needed.`);
-    if (ui.submitting) out.push("Submitting…");
+    if (!lengthOk()) out.push(`Quiz length must be ${REGULAR.min}–${REGULAR.max}.`);
+    if (bank && (ui.weekly || ui.topics.size) && pool(bank).length < quizLength()) out.push(`Only ${pool(bank).length} eligible questions in your selection; ${quizLength()} needed.`);
+    if (ui.busy) out.push("Wait for the current Slack action to finish.");
     return out;
+  }
+
+  function quizState(q) {
+    if (q.submission) return { label: "Submitted", kind: "ok" };
+    const d = q.delivery || {};
+    if (d.status === "failed") return { label: "Delivery failed", kind: "bad" };
+    if (d.status === "unknown") return { label: "Check Slack", kind: "warn" };
+    if (d.status === "delivered") return { label: "Not started", kind: "mute" };
+    return { label: "Sending…", kind: "info" };
+  }
+  function counts(quizzes) {
+    const c = { pending: 0, delivered: 0, failed: 0, unknown: 0, submitted: 0, awaiting: 0 };
+    for (const q of quizzes) {
+      const s = (q.delivery || {}).status || "pending";
+      c[s] = (c[s] || 0) + 1;
+      if (q.submission) c.submitted++;
+      else if (s === "delivered") c.awaiting++;
+    }
+    return c;
+  }
+
+  function finish(ctx, message) {
+    ui.busy = null; ui.progress = null;
+    if (message) toast(message);
+    ctx.rerender();
+  }
+  function step(ctx) { ui.progress.done++; ctx.rerender(); }
+
+  /* ---------------------------------------------------------------- Slack work (all as the trainer) */
+
+  async function selfId(ctx) {
+    if (!ui.selfId) ui.selfId = E.parseProfileId(E.textOf(await ctx.data.slack("slack_read_user_profile", { response_format: "detailed" })));
+    if (!ui.selfId) throw { code: "tool_error", message: "couldn't read your own Slack user ID" };
+    return ui.selfId;
+  }
+
+  // Looks up each trainee's Slack account by work email. Only an exact email match counts.
+  async function checkSlackAccounts(ctx, cohort) {
+    const people = cohort.trainees.filter((t) => isEmail(t.email));
+    ui.busy = "check"; ui.progress = { done: 0, total: people.length };
+    ctx.rerender();
+    let found = 0, failed = 0;
+    for (const t of people) {
+      const email = normEmail(t.email);
+      let entry;
+      try {
+        const res = await ctx.data.slack("slack_search_users", { keywords: [email.split("@")[0]], natural_language_query: "", response_format: "concise", limit: 20 });
+        const userId = E.findUserIdByEmail(E.textOf(res), email);
+        entry = userId ? { userId, status: "found" } : { userId: null, status: "not-found", error: "No Slack account uses this email." };
+        if (userId) found++;
+      } catch (e) {
+        console.warn("quiz: slack lookup", e && e.code);
+        if (e && FATAL.includes(e.code)) return finish(ctx, slackError(e));
+        entry = { userId: null, status: "error", error: slackError(e) };
+        failed++;
+      }
+      await ctx.data.saveSlackDirectory({ [email]: { ...entry, checkedAt: new Date().toISOString() } });
+      step(ctx);
+    }
+    finish(ctx, `${found} of ${people.length} trainees matched in Slack${failed ? `; ${failed} lookups failed` : ""}.`);
+  }
+
+  /**
+   * Sends one quiz DM (a first message, plus replies under it if the quiz is long). Never includes answers.
+   * Returns the delivery record.
+   */
+  async function deliver(ctx, quiz, className) {
+    const parts = E.formatQuiz({ className, day: quiz.day, questions: quiz.questions });
+    const sentAfter = (Date.now() / 1000 - 2).toFixed(6); // replies are read from here if the message ts is unknown
+    let first;
+    try {
+      first = E.parseSendResult(E.textOf(await ctx.data.slack("slack_send_message", { channel_id: quiz.slackUserId, message: parts[0] })));
+    } catch (e) {
+      console.warn("quiz: send", e && e.code);
+      return ambiguous(e)
+        ? { status: "unknown", at: new Date().toISOString(), sentAfter, error: slackError(e) + " It may still have been sent: check your DM with this trainee before resending." }
+        : { status: "failed", at: new Date().toISOString(), error: slackError(e) };
+    }
+    const delivery = { status: "delivered", at: new Date().toISOString(), sentAfter, ts: first.ts, channel: first.channel, parts: parts.length };
+    for (const part of parts.slice(1)) {
+      try {
+        await ctx.data.slack("slack_send_message", { channel_id: first.channel || quiz.slackUserId, message: part, ...(first.ts ? { thread_ts: first.ts } : {}) });
+      } catch (e) {
+        console.warn("quiz: send part", e && e.code);
+        return { ...delivery, status: "failed", error: `Only part of the quiz was sent (${slackError(e)}) Resend it.` };
+      }
+    }
+    return delivery;
+  }
+
+  async function generate(ctx, cohort) {
+    const questionPool = pool(ui.sheet.bank);
+    const length = quizLength();
+    const gen = {
+      id: newId(), classId: cohort.id, className: cohort.name, day: ui.day,
+      mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic] : [...ui.topics],
+      length, poolSize: questionPool.length, createdAt: new Date().toISOString(), createdBy: ctx.data.perms.userId, status: "sending",
+    };
+    ui.lastSubmit = { genId: gen.id, day: gen.day };
+    ui.showDay = gen.day; ui.generationId = gen.id;
+
+    // Build and save every quiz before anything is sent, so a closed tab never loses an answer key.
+    const quizzes = cohort.trainees.map((t) => {
+      const s = slackStatus(ctx, t.email);
+      return {
+        generationId: gen.id, traineeId: t.id, classId: cohort.id, day: gen.day,
+        name: t.name, email: normEmail(t.email), slackUserId: s.userId || null,
+        questions: E.buildQuiz(questionPool, length),
+        delivery: s.ok ? { status: "pending" } : { status: "failed", at: new Date().toISOString(), error: s.detail },
+      };
+    });
+    await ctx.data.saveQuizGeneration(gen);
+    for (const q of quizzes) await ctx.data.saveQuiz(q);
+
+    const toSend = quizzes.filter((q) => q.delivery.status === "pending");
+    ui.progress = { done: 0, total: toSend.length };
+    ctx.rerender();
+    for (const q of toSend) {
+      q.delivery = await deliver(ctx, q, cohort.name);
+      await ctx.data.saveQuiz(q);
+      step(ctx);
+    }
+    const c = counts(quizzes);
+    await ctx.data.saveQuizGeneration({ ...gen, status: "sent", sentAt: new Date().toISOString(), delivered: c.delivered, failed: c.failed + c.unknown });
+    finish(ctx, `Sent ${c.delivered} of ${quizzes.length} quizzes${c.failed + c.unknown ? `; ${c.failed + c.unknown} need attention` : ""}.`);
+  }
+
+  // Reads each trainee's DM (and the quiz's thread), takes their first reply with answers, grades it.
+  async function refreshResults(ctx, gen) {
+    const open = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && ["delivered", "unknown"].includes(q.delivery.status) && !q.submission && q.slackUserId);
+    if (!open.length) { toast("Nothing is waiting for a reply."); return; }
+    ui.busy = "refresh"; ui.progress = { done: 0, total: open.length };
+    ctx.rerender();
+    let graded = 0, errors = 0;
+    for (const q of open) {
+      const d = q.delivery;
+      const channel = d.channel || q.slackUserId;
+      const after = d.ts || d.sentAfter || "0";
+      try {
+        const messages = E.parseMessages(E.textOf(await ctx.data.slack("slack_read_channel", { channel_id: channel, oldest: after, limit: 100, response_format: "detailed" })));
+        if (d.ts) {
+          const thread = await ctx.data.slack("slack_read_thread", { channel_id: channel, message_ts: d.ts, limit: 200, response_format: "detailed" });
+          for (const m of E.parseMessages(E.textOf(thread))) if (!messages.some((x) => x.ts === m.ts)) messages.push(m);
+        }
+        const sub = E.firstSubmission(messages, q.slackUserId, after, q.questions.length);
+        const next = { ...q, refreshError: null, refreshedAt: new Date().toISOString() };
+        if (sub) {
+          // The first reply is final: graded once, never replaced.
+          next.submission = { at: new Date(Number(sub.ts) * 1000).toISOString(), ts: sub.ts, text: sub.text, answers: sub.answers };
+          next.result = E.grade(q.questions, sub.answers);
+          if (d.status === "unknown") next.delivery = { ...d, status: "delivered", error: null };
+          graded++;
+        }
+        await ctx.data.saveQuiz(next);
+      } catch (e) {
+        console.warn("quiz: read replies", e && e.code);
+        if (e && FATAL.includes(e.code)) return finish(ctx, slackError(e));
+        errors++;
+        await ctx.data.saveQuiz({ ...q, refreshError: slackError(e) });
+      }
+      step(ctx);
+    }
+    finish(ctx, `${plural(graded, "new submission")} graded${errors ? `; couldn't read ${errors} DM${errors > 1 ? "s" : ""}` : ""}.`);
+  }
+
+  async function retryFailed(ctx, gen, cohort) {
+    const list = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && q.delivery.status === "failed" && !q.submission);
+    if (!list.length) { toast("No failed deliveries."); return; }
+    ui.busy = "send"; ui.progress = { done: 0, total: list.length };
+    ctx.rerender();
+    let sent = 0;
+    for (const q of list) {
+      const t = cohort.trainees.find((x) => x.id === q.traineeId);
+      const s = slackStatus(ctx, t ? t.email : q.email);
+      const next = { ...q, slackUserId: s.userId || q.slackUserId };
+      if (!next.slackUserId) next.delivery = { ...q.delivery, at: new Date().toISOString(), error: s.detail || "No Slack account matched." };
+      else { next.delivery = await deliver(ctx, next, cohort.name); if (next.delivery.status === "delivered") sent++; }
+      await ctx.data.saveQuiz(next);
+      step(ctx);
+    }
+    finish(ctx, `Resent ${sent} of ${list.length}.`);
+  }
+
+  async function remind(ctx, gen) {
+    const list = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && q.delivery.status === "delivered" && !q.submission);
+    if (!list.length) { toast("Everyone who got the quiz has answered."); return; }
+    ui.busy = "send"; ui.progress = { done: 0, total: list.length };
+    ctx.rerender();
+    let sent = 0, failed = 0;
+    for (const q of list) {
+      try {
+        await ctx.data.slack("slack_send_message", { channel_id: q.delivery.channel || q.slackUserId, message: REMINDER(q.day) });
+        sent++;
+        await ctx.data.saveQuiz({ ...q, remindedAt: new Date().toISOString() });
+      } catch (e) { console.warn("quiz: remind", e && e.code); failed++; }
+      step(ctx);
+    }
+    finish(ctx, `Reminded ${plural(sent, "trainee")}${failed ? `; ${failed} failed` : ""}.`);
+  }
+
+  // Results summary, sent only to the trainer's own Slack DM.
+  async function sendSummary(ctx, gen) {
+    ui.busy = "send"; ctx.rerender();
+    try {
+      const me = await selfId(ctx);
+      const quizzes = ctx.data.quizzesFor(gen.id).sort((a, b) => a.name.localeCompare(b.name));
+      const done = quizzes.filter((q) => q.result);
+      const avg = done.length ? Math.round(done.reduce((n, q) => n + q.result.pct, 0) / done.length) : null;
+      const rows = quizzes.map((q) => `| ${q.name.replace(/\|/g, "\\|")} | ${q.result ? `${q.result.pct}% (${q.result.score}/${q.result.total})` : quizState(q).label} |`);
+      const text = `**${gen.className} · Day ${gen.day} quiz results** (only you can see this)\n${done.length} of ${quizzes.length} submitted${avg != null ? ` · average ${avg}%` : ""}\n\n| Trainee | Score |\n|---|---|\n${rows.join("\n")}`;
+      await ctx.data.slack("slack_send_message", { channel_id: me, message: text.slice(0, 4900) });
+      finish(ctx, "Summary sent to your own Slack DMs.");
+    } catch (e) { console.warn("quiz: summary", e && e.code); finish(ctx, slackError(e)); }
+  }
+
+  // A real quiz from the current selection, sent only to the trainer. Nothing is saved.
+  async function sendTest(ctx, cohort) {
+    ui.busy = "test"; ctx.rerender();
+    try {
+      const me = await selfId(ctx);
+      const quiz = { day: ui.day || 1, slackUserId: me, questions: E.buildQuiz(pool(ui.sheet.bank), quizLength()) };
+      const d = await deliver(ctx, quiz, (cohort ? cohort.name : "Class") + " (TEST)");
+      finish(ctx, d.status === "delivered" ? "Test quiz sent to your own Slack DMs." : d.error);
+    } catch (e) { console.warn("quiz: test", e && e.code); finish(ctx, e && e.code ? slackError(e) : String((e && e.message) || e)); }
+  }
+
+  /* ---------------------------------------------------------------- export */
+
+  const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+  async function exportDay(ctx, cohort, day) {
+    const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id && g.day === day);
+    const rows = [["Class", "Training day", "Generated", "Generation ID", "Topics", "Trainee", "Email", "Slack user ID", "Delivery", "Quiz status", "Submitted", "Score", "Total", "Score %", "Answers"]];
+    for (const g of gens) for (const q of ctx.data.quizzesFor(g.id).sort((a, b) => a.name.localeCompare(b.name))) {
+      rows.push([cohort.name, day, fmtAt(g.createdAt), g.id, g.topics.join(", "), q.name, q.email, q.slackUserId || "", (q.delivery || {}).status || "",
+        quizState(q).label, q.submission ? fmtAt(q.submission.at) : "", q.result ? q.result.score : "", q.result ? q.result.total : "", q.result ? q.result.pct : "",
+        q.result ? q.result.detail.map((d) => `${d.n}:${d.answerGiven.split(".")[0]}${d.correct ? "✓" : "✗"}`).join(" ") : ""]);
+    }
+    ui.busy = "export"; ctx.rerender();
+    try {
+      const cfg = ctx.data.quizConfig || {};
+      const res = await ctx.data.drive("create_file", {
+        title: `Quiz results - ${cohort.name} - Day ${day} - ${new Date().toISOString().slice(0, 10)}`,
+        textContent: rows.map((r) => r.map(csvCell).join(",")).join("\n"),
+        contentMimeType: "text/csv",
+        ...(cfg.exportFolderId ? { parentId: cfg.exportFolderId } : {}),
+      });
+      const text = E.textOf(res);
+      const id = (res && res.payload && (res.payload.id || (res.payload.file && res.payload.file.id))) || (text.match(/"id"\s*:\s*"([A-Za-z0-9_-]{20,})"/) || [])[1];
+      const link = (text.match(/https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]+/) || [])[0] || (id ? `https://docs.google.com/spreadsheets/d/${id}` : null);
+      ui.exportLinks[`${cohort.id}_${day}`] = link || "created";
+      finish(ctx, "Spreadsheet created.");
+    } catch (e) { console.warn("quiz: export", e && e.code); finish(ctx, driveError(e)); }
   }
 
   /* ---------------------------------------------------------------- render pieces */
@@ -174,34 +412,34 @@
     const cfg = ctx.data.quizConfig || {};
     return `
       <div class="card quiz-setup">
-        <h2>${editing ? "Quiz settings" : "Connect the quiz backend"}</h2>
-        <p class="muted small">Paste the Control Sheet and Requests folder links (or IDs). They aren't secret; the Slack token stays in Apps Script. Setup steps are in QUIZ.md.</p>
+        <h2>${editing ? "Quiz settings" : "Connect your Question Bank"}</h2>
+        <p class="muted small">Paste the link to the Google Sheet with your “Question Bank” tab. Quizzes are sent from your own Slack account, so nothing else needs setting up. Details are in QUIZ.md.</p>
         <label class="form-field" for="quiz-sheet-id"><span>Control Sheet</span><input id="quiz-sheet-id" value="${esc(cfg.controlSheetId || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
-        <label class="form-field" for="quiz-folder-id"><span>Requests folder</span><input id="quiz-folder-id" value="${esc(cfg.requestsFolderId || "")}" placeholder="https://drive.google.com/drive/folders/…"></label>
+        <label class="form-field" for="quiz-folder-id"><span>Export folder (leave blank for My Drive)</span><input id="quiz-folder-id" value="${esc(cfg.exportFolderId || "")}" placeholder="https://drive.google.com/drive/folders/…"></label>
         <div class="btn-row"><button class="btn" data-action="quiz:saveConfig">Save</button>${editing ? `<button class="btn secondary" data-action="quiz:cancelConfig">Cancel</button>` : ""}</div>
       </div>`;
   }
 
-  function sheetBar(ctx) {
+  function sheetBar() {
     const s = ui.sheet;
-    const when = s.loadedAt ? `Loaded ${s.loadedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
+    const when = s.loadedAt ? `Question Bank loaded ${s.loadedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
     return `
       <div class="toolbar">
-        <span class="muted small">${s.status === "loading" ? "Loading Control Sheet…" : s.status === "error" ? "" : esc(when)}${s.data && s.data.invalid ? ` · ${plural(s.data.invalid, "question")} skipped (inactive or invalid)` : ""}</span>
+        <span class="muted small">${s.status === "loading" ? "Loading Control Sheet…" : s.status === "error" ? "" : esc(when)}${s.bank && s.bank.skipped ? ` · ${plural(s.bank.skipped, "question")} skipped (inactive or invalid)` : ""}</span>
         <div class="btn-row">
-          <button class="icon-btn" data-action="quiz:refresh" title="Refresh results" aria-label="Refresh results">↻</button>
+          <button class="icon-btn" data-action="quiz:reloadSheet" title="Reload the Question Bank" aria-label="Reload the Question Bank">⟳</button>
           <button class="icon-btn" data-action="quiz:editConfig" title="Quiz settings" aria-label="Quiz settings">⚙</button>
         </div>
       </div>
-      ${s.status === "error" ? `<div class="banner error-banner"><div class="min0"><strong>Couldn't load the Control Sheet</strong><span>${esc(s.error)}</span></div><button class="btn secondary" data-action="quiz:refresh">Try again</button></div>` : ""}`;
+      ${s.status === "error" ? `<div class="banner error-banner"><div class="min0"><strong>Couldn't load the Control Sheet</strong><span>${esc(s.error)}</span></div><button class="btn secondary" data-action="quiz:reloadSheet">Try again</button></div>` : ""}`;
   }
 
-  function topicSection(sheet) {
-    if (!sheet) return `<div class="empty">Topics appear once the Control Sheet loads.</div>`;
-    const total = sheet.topics.reduce((n, t) => n + t.eligible, 0);
+  function topicSection(bank) {
+    if (!bank) return `<div class="empty">Topics appear once the Control Sheet loads.</div>`;
+    const total = bank.questions.length;
     const q = ui.topicQuery.trim().toLowerCase();
     const groups = {};
-    for (const t of sheet.topics) {
+    for (const t of bank.topics) {
       if (q && !t.name.toLowerCase().includes(q) && !t.category.toLowerCase().includes(q)) continue;
       (groups[t.category] ||= []).push(t);
     }
@@ -229,7 +467,7 @@
       </div>`;
   }
 
-  function classSection(ctx, cohort, sheet) {
+  function classSection(ctx, cohort) {
     const q = ui.classQuery.trim().toLowerCase();
     const me = ctx.data.perms.userId;
     const all = ctx.data.cohorts.filter((c) => (!q || c.name.toLowerCase().includes(q)) && (!ui.myOnly || (me && c.createdBy === me)));
@@ -247,14 +485,15 @@
         <input class="search" id="quiz-class-search" type="search" placeholder="Search classes" value="${esc(ui.classQuery)}" data-action-input="quiz:classSearch" aria-label="Search classes">
         <div class="class-list">${rows || `<div class="muted small">${ui.myOnly ? "No classes you created match. Turn off My Classes to see all." : "No classes match."}</div>`}</div>
         ${pages > 1 ? `<div class="pager"><button class="link-btn" data-action="quiz:page" data-dir="-1" ${ui.page ? "" : "disabled"}>‹ Prev</button><span class="muted small">Page ${ui.page + 1} of ${pages}</span><button class="link-btn" data-action="quiz:page" data-dir="1" ${ui.page < pages - 1 ? "" : "disabled"}>Next ›</button></div>` : ""}
-        ${cohort ? rosterPreview(ctx, cohort, sheet) : ""}
+        ${cohort ? rosterPreview(ctx, cohort) : ""}
       </div>`;
   }
 
-  function rosterPreview(ctx, cohort, sheet) {
-    const statuses = cohort.trainees.map((t) => ({ t, s: slackStatus(sheet, t.email) }));
+  const progressText = () => (ui.progress ? ` ${ui.progress.done} of ${ui.progress.total}…` : "…");
+
+  function rosterPreview(ctx, cohort) {
+    const statuses = cohort.trainees.map((t) => ({ t, s: slackStatus(ctx, t.email) }));
     const ready = statuses.filter((x) => x.s.ok).length;
-    const pending = pendingOfType(ctx, "resolve-roster", cohort.id);
     return `
       <div class="roster-preview">
         <div class="card-head"><strong>${esc(cohort.name)} roster</strong><span class="muted small">${ready} of ${cohort.trainees.length} can receive quizzes in Slack</span></div>
@@ -262,13 +501,13 @@
           <li><span class="min0 ellipsis">${esc(t.name)} <span class="muted small">${esc(t.email || "no email")}</span></span><span class="pill ${s.kind}" title="${esc(s.detail || "")}">${esc(s.label)}</span></li>`).join("")}</ul>`
           : `<div class="empty">No trainees in this class. Add them in Cohorts.</div>`}
         <div class="btn-row">
-          <button class="btn secondary" data-action="quiz:resolve" ${cohort.trainees.length && !pending ? "" : "disabled"}>${pending ? "Checking Slack accounts…" : "Check Slack accounts"}</button>
-          ${pending ? `<span class="muted small">Submitted ${timeOf(pending.createdAt)}. Refresh in a minute.</span>` : ""}
+          <button class="btn secondary" data-action="quiz:check" ${cohort.trainees.length && !ui.busy ? "" : "disabled"}>${ui.busy === "check" ? "Checking Slack accounts" + progressText() : "Check Slack accounts"}</button>
+          <span class="muted small">Looks up each work email in Slack. Nothing is sent.</span>
         </div>
       </div>`;
   }
 
-  function settingsSection(ctx, cohort) {
+  function settingsSection(cohort) {
     let dayHtml = `<div class="muted small">Pick a class first.</div>`;
     if (cohort) {
       const d = dayInfo(cohort);
@@ -288,135 +527,86 @@
         <h2>Quiz</h2>
         ${dayHtml}
         <label class="form-field" for="quiz-length"><span>Questions per trainee ${ui.weekly ? "(Weekly Quiz is always 50)" : `(${REGULAR.min}–${REGULAR.max})`}</span>
-          <input id="quiz-length" type="number" min="${REGULAR.min}" max="${REGULAR.max}" step="1" value="${ui.weekly ? WEEKLY.length : ui.length}" ${ui.weekly ? "disabled" : ""} data-action-change="quiz:setLength"></label>
+          <input id="quiz-length" type="number" min="${REGULAR.min}" max="${REGULAR.max}" step="1" value="${quizLength()}" ${ui.weekly ? "disabled" : ""} data-action-change="quiz:setLength"></label>
       </div>`;
   }
 
-  function generateSection(ctx, cohort, sheet) {
-    const reasons = blockers(ctx, cohort, sheet);
-    const pool = poolSize(sheet);
-    const ready = cohort ? cohort.trainees.filter((t) => slackStatus(sheet, t.email).ok).length : 0;
+  function generateSection(ctx, cohort) {
+    const bank = ui.sheet.bank;
+    const reasons = blockers(ctx, cohort, bank);
+    const ready = cohort ? cohort.trainees.filter((t) => slackStatus(ctx, t.email).ok).length : 0;
     const summary = cohort && (ui.weekly || ui.topics.size)
-      ? `${ui.weekly ? "Weekly Quiz" : plural(ui.topics.size, "topic")} · ${ui.weekly ? WEEKLY.length : ui.length} questions each from a pool of ${pool} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
+      ? `${ui.weekly ? "Weekly Quiz" : plural(ui.topics.size, "topic")} · ${quizLength()} questions each from a pool of ${pool(bank).length} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
       : "";
+    const canSample = bank && (ui.weekly || ui.topics.size) && lengthOk() && pool(bank).length >= quizLength();
     return `
       <div class="card generate">
         <div class="min0">
           ${summary ? `<strong>${summary}</strong>` : `<strong>Generate quiz</strong>`}
-          ${reasons.length ? `<ul class="reasons">${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<span class="muted small">Each trainee gets their own random questions and answer order, sent privately in Slack.</span>`}
+          ${reasons.length ? `<ul class="reasons">${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<span class="muted small">Each trainee gets their own random questions and answer order, sent privately from your Slack account.</span>`}
+          <div class="btn-row">
+            <button class="link-btn" data-action="quiz:preview" ${canSample ? "" : "disabled"}>Preview message</button>
+            <button class="link-btn" data-action="quiz:test" ${canSample && !ui.busy ? "" : "disabled"}>${ui.busy === "test" ? "Sending test…" : "Send me a test quiz"}</button>
+          </div>
           ${ui.lastSubmit ? submitStatus(ctx) : ""}
         </div>
-        <button class="btn big" data-action="quiz:generate" ${reasons.length ? "disabled" : ""}>Generate quiz</button>
+        <button class="btn big" data-action="quiz:generate" ${reasons.length ? "disabled" : ""}>${ui.busy === "generate" ? "Sending" + progressText() : "Generate quiz"}</button>
       </div>`;
   }
 
-  function linksFor(sheet, generationId) {
-    return sheet ? sheet.links.filter((l) => String(l["Generation ID"]) === generationId) : [];
-  }
-  function counts(links) {
-    const c = { queued: 0, delivered: 0, failed: 0, submitted: 0, awaiting: 0, dry: 0 };
-    for (const l of links) {
-      const d = l["Delivery status"];
-      if (d === "Pending") c.queued++;
-      else if (d === "Delivered") c.delivered++;
-      else if (d === "Failed") c.failed++;
-      else if (/^Dry run/.test(d)) c.dry++;
-      if (l["Submission status"] === "Submitted") c.submitted++;
-      else if (d === "Delivered") c.awaiting++;
-    }
-    return c;
-  }
-  const countChips = (c) => `
-    <div class="today-stats">
-      ${c.queued ? `<span class="stat-chip"><b>${c.queued}</b> Queued</span>` : ""}
-      <span class="stat-chip s-present"><b>${c.delivered}</b> Delivered</span>
-      ${c.dry ? `<span class="stat-chip s-late"><b>${c.dry}</b> Dry run</span>` : ""}
-      ${c.failed ? `<span class="stat-chip s-absent"><b>${c.failed}</b> Failed</span>` : ""}
-      <span class="stat-chip"><b>${c.awaiting}</b> Awaiting submission</span>
-      <span class="stat-chip s-present"><b>${c.submitted}</b> Submitted</span>
-    </div>`;
-
-  const logFor = (sheet, requestId) => sheet && sheet.log.find((r) => String(r["Request ID"]) === requestId);
-  const timeOf = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
-
-  function pendingOfType(ctx, type, classId) {
-    const sheet = ui.sheet.data;
-    return ctx.data.quizRequests.find((r) => r.type === type && r.classId === classId && r.status !== "failed" &&
-      !(sheet && logFor(sheet, r.requestId) && /^(Done|Rejected)/.test(logFor(sheet, r.requestId)["Status"])));
+  function countChips(c) {
+    return `
+      <div class="today-stats">
+        ${c.pending ? `<span class="stat-chip"><b>${c.pending}</b> Sending</span>` : ""}
+        <span class="stat-chip s-present"><b>${c.delivered}</b> Delivered</span>
+        ${c.unknown ? `<span class="stat-chip s-late"><b>${c.unknown}</b> Check Slack</span>` : ""}
+        ${c.failed ? `<span class="stat-chip s-absent"><b>${c.failed}</b> Failed</span>` : ""}
+        <span class="stat-chip"><b>${c.awaiting}</b> Awaiting submission</span>
+        <span class="stat-chip s-present"><b>${c.submitted}</b> Submitted</span>
+      </div>`;
   }
 
   function submitStatus(ctx) {
     const s = ui.lastSubmit;
-    const sheet = ui.sheet.data;
-    const log = logFor(sheet, s.requestId);
-    const c = counts(linksFor(sheet, s.requestId));
+    const quizzes = ctx.data.quizzesFor(s.genId);
     return `
       <div class="submit-status" role="status">
         <strong>Request submitted for Day ${s.day} - quizzes will be sent shortly. Refresh to check.</strong>
-        ${log ? `<span class="small ${log["Status"] === "Rejected" ? "danger-text" : "muted"}">Backend: ${esc(log["Status"])}${log["Message"] ? " · " + esc(log["Message"]) : ""}</span>` : `<span class="muted small">Waiting for the backend to pick it up (runs every minute).</span>`}
-        ${linksFor(sheet, s.requestId).length ? countChips(c) : ""}
+        ${ui.busy === "generate" && ui.progress ? `<span class="muted small">Sending from your Slack: ${ui.progress.done} of ${ui.progress.total}. Keep this page open until it finishes.</span>` : ""}
+        ${quizzes.length ? countChips(counts(quizzes)) : ""}
       </div>`;
   }
 
   function resultsSection(ctx, cohort) {
-    const sheet = ui.sheet.data;
     if (!cohort) return `<div class="card"><h2>Results</h2><div class="empty">Pick a class to see its quizzes and results.</div></div>`;
-    // Generations: from the sheet, plus requests the backend hasn't picked up yet.
-    const gens = {};
-    for (const l of sheet ? sheet.links : []) {
-      if (String(l["Class ID"]) !== cohort.id) continue;
-      const id = String(l["Generation ID"]);
-      gens[id] ||= { id, day: Number(l["Training day"]), at: stamp(l["Generation date/time"]), topics: l["Topics"], length: l["Quiz length"], links: [] };
-      gens[id].links.push(l);
-    }
-    for (const r of ctx.data.quizRequests) {
-      if (r.type !== "generate" || r.classId !== cohort.id || gens[r.requestId]) continue;
-      gens[r.requestId] = { id: r.requestId, day: r.trainingDay, at: r.createdAt, topics: r.topics.join(", "), length: r.quizLength, links: [], pending: true, failed: r.status === "failed" };
-    }
-    const list = Object.values(gens);
-    const days = [...new Set(list.map((g) => g.day))].sort((a, b) => b - a);
+    const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id);
+    const days = [...new Set(gens.map((g) => g.day))].sort((a, b) => b - a);
     if (!days.length) return `<div class="card"><h2>Results</h2><div class="empty">No quizzes generated for ${esc(cohort.name)} yet.</div></div>`;
     if (!days.includes(ui.showDay)) ui.showDay = days[0];
-    const ofDay = list.filter((g) => g.day === ui.showDay).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const ofDay = gens.filter((g) => g.day === ui.showDay).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (!ofDay.some((g) => g.id === ui.generationId)) ui.generationId = ofDay[0].id;
     const gen = ofDay.find((g) => g.id === ui.generationId);
-    const results = {};
-    for (const r of sheet ? sheet.results : []) if (String(r["Generation ID"]) === gen.id) results[String(r["Trainee ID"])] = r;
-    const log = logFor(sheet, gen.id);
+    const quizzes = ctx.data.quizzesFor(gen.id).sort((a, b) => a.name.localeCompare(b.name));
 
-    let body;
-    if (gen.pending) {
-      body = `<div class="empty">${gen.failed ? "This request couldn't be submitted to Drive." : log && log["Status"] === "Rejected" ? `The backend rejected this request: ${esc(log["Message"])}` : "Submitted. The backend hasn't created these quizzes yet; refresh in a minute."}</div>`;
-    } else {
-      const rows = gen.links.map((l) => {
-        const r = results[String(l["Trainee ID"])];
-        const delivery = l["Delivery status"];
-        const quizStatus = delivery === "Failed" ? "Delivery failed" : (l["Submission status"] || "Not started");
-        const qsKind = quizStatus === "Submitted" ? "ok" : quizStatus === "In progress" ? "info" : quizStatus === "Delivery failed" ? "bad" : "mute";
-        return `<tr>
-          <td><strong>${esc(l["Trainee name"])}</strong></td>
-          <td class="small">${esc(l["Trainee email"])}${l["Slack user ID"] && l["Slack user ID"] !== "DRYRUN" ? `<br><span class="muted">${esc(l["Slack user ID"])}</span>` : ""}</td>
-          <td><span class="pill ${delivery === "Delivered" ? "ok" : delivery === "Failed" ? "bad" : "mute"}">${esc(delivery)}</span>${l["Last error"] ? `<br><span class="small danger-text">${esc(l["Last error"])}</span>` : ""}</td>
-          <td><span class="pill ${qsKind}">${esc(quizStatus)}</span></td>
-          <td class="small">${esc(stamp(l["Submission timestamp"]))}</td>
-          <td class="num"><strong>${r ? esc(r["Score percentage"]) + "%" : "—"}</strong></td>
-          <td>${r ? `<button class="link-btn" data-action="quiz:viewAnswers" data-gen="${esc(gen.id)}" data-trainee="${esc(l["Trainee ID"])}">View answers</button>` : ""}</td>
-        </tr>`;
-      }).join("");
-      body = `${countChips(counts(gen.links))}
-        <div class="table-wrap"><table class="table quiz-roster">
-          <thead><tr><th>Trainee</th><th>Email / Slack</th><th>Delivery</th><th>Quiz</th><th>Submitted</th><th>Score</th><th></th></tr></thead>
-          <tbody>${rows}</tbody></table></div>`;
-    }
-
-    const recent = ctx.data.quizRequests.filter((r) => r.classId === cohort.id && ["resend", "trainer-summary", "export"].includes(r.type)).slice(0, 4);
-    const recentHtml = recent.length ? `<div class="recent-actions">${recent.map((r) => {
-      const lg = logFor(sheet, r.requestId);
-      const msg = lg ? `${lg["Status"]}${lg["Message"] ? " · " + lg["Message"] : ""}` : r.status === "failed" ? "Couldn't submit" : "Waiting for the backend";
-      const link = (msg.match(/https:\/\/docs\.google\.com\/\S+/) || [])[0];
-      const label = { resend: "Resend / remind", "trainer-summary": "Results summary to me", export: "Export to Sheets" }[r.type];
-      return `<div class="small"><strong>${label}</strong> · ${timeOf(r.createdAt)} · <span class="muted">${esc(link ? msg.replace(link, "") : msg)}</span>${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">Open spreadsheet</a>` : ""}</div>`;
-    }).join("")}</div>` : "";
+    const rows = quizzes.map((q) => {
+      const st = quizState(q);
+      const d = q.delivery || {};
+      const dKind = { delivered: "ok", failed: "bad", unknown: "warn" }[d.status] || "mute";
+      const dLabel = { delivered: "Delivered", failed: "Failed", unknown: "Unconfirmed" }[d.status] || "Sending";
+      const answered = q.submission ? q.submission.answers.filter(Boolean).length : 0;
+      return `<tr>
+        <td><strong>${esc(q.name)}</strong></td>
+        <td class="small">${esc(q.email)}${q.slackUserId ? `<br><span class="muted">${esc(q.slackUserId)}</span>` : ""}</td>
+        <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}</td>
+        <td><span class="pill ${st.kind}">${esc(st.label)}</span>${q.submission && answered < q.questions.length ? `<br><span class="small muted">Answered ${answered} of ${q.questions.length}</span>` : ""}</td>
+        <td class="small">${q.submission ? esc(fmtAt(q.submission.at)) : ""}</td>
+        <td class="num"><strong>${q.result ? esc(q.result.pct) + "%" : "—"}</strong></td>
+        <td>${q.result ? `<button class="link-btn" data-action="quiz:viewAnswers" data-gen="${esc(gen.id)}" data-trainee="${esc(q.traineeId)}">View answers</button>` : ""}</td>
+      </tr>`;
+    }).join("");
+    const link = ui.exportLinks[`${cohort.id}_${ui.showDay}`];
+    const busyLabel = { refresh: "Reading replies from Slack", send: "Sending", export: "Creating spreadsheet" }[ui.busy];
+    const stalled = gen.status === "sending" && !(ui.busy === "generate" && ui.lastSubmit && ui.lastSubmit.genId === gen.id);
 
     return `
       <div class="card results">
@@ -426,95 +616,70 @@
             <label class="inline-field" for="quiz-show-day">Showing day
               <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>
             ${ofDay.length > 1 ? `<label class="inline-field" for="quiz-gen">Quiz
-              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${esc(fmtAt(g.at))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
-            <button class="icon-btn" data-action="quiz:refresh" title="Refresh results" aria-label="Refresh results">↻</button>
-            <button class="icon-btn" data-action="quiz:slackMenu" ${gen.pending ? "disabled" : ""} title="Send via Slack DM" aria-label="Send via Slack DM">✉</button>
-            <button class="icon-btn" data-action="quiz:export" title="Export the day's results to Google Sheets" aria-label="Export the day's results to Google Sheets">⇪</button>
+              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${esc(fmtAt(g.createdAt))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
+            <button class="icon-btn" data-action="quiz:refresh" ${ui.busy ? "disabled" : ""} title="Refresh: read replies from Slack and grade them" aria-label="Refresh results">↻</button>
+            <button class="icon-btn" data-action="quiz:slackMenu" ${ui.busy ? "disabled" : ""} title="Send via Slack DM" aria-label="Send via Slack DM">✉</button>
+            <button class="icon-btn" data-action="quiz:export" ${ui.busy ? "disabled" : ""} title="Export the day's results to Google Sheets" aria-label="Export the day's results to Google Sheets">⇪</button>
           </div>
         </div>
-        <div class="muted small">Generated ${esc(fmtAt(gen.at))} · ${esc(gen.topics)} · ${esc(gen.length)} questions · ID ${esc(gen.id)}</div>
-        ${body}
-        ${recentHtml}
+        <div class="muted small">Generated ${esc(fmtAt(gen.createdAt))} · ${esc(gen.topics.join(", "))} · ${esc(gen.length)} questions · ID ${esc(gen.id)}</div>
+        ${stalled ? `<p class="small danger-text">Sending stopped before it finished (the page was closed?). Rows still “Sending” were not sent; check your DMs, then use ✉ to resend failed ones.</p>` : ""}
+        ${busyLabel ? `<div class="muted small" role="status">${busyLabel}${progressText()}</div>` : ""}
+        ${link ? `<div class="small">Exported: ${link === "created" ? "a new spreadsheet is in your Google Drive." : `<a href="${esc(link)}" target="_blank" rel="noopener">Open spreadsheet</a>`}</div>` : ""}
+        ${countChips(counts(quizzes))}
+        <div class="table-wrap"><table class="table quiz-roster">
+          <thead><tr><th>Trainee</th><th>Email / Slack</th><th>Delivery</th><th>Quiz</th><th>Submitted</th><th>Score</th><th></th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
       </div>`;
   }
-  const fmtAt = (v) => { const d = new Date(String(v).replace(" ", "T")); return isNaN(d) ? String(v) : d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
-
-  /* ---------------------------------------------------------------- submitting request files */
-
-  async function submitRequest(ctx, type, fields, cohort) {
-    const cfg = ctx.data.quizConfig;
-    const requestId = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
-    const createdAt = new Date().toISOString();
-    const body = { requestId, type, classId: cohort.id, className: cohort.name, requestedAt: createdAt, ...fields };
-    const record = { requestId, type, classId: cohort.id, trainingDay: fields.trainingDay || null, topics: fields.topics || [], quizLength: fields.quizLength || null, createdAt, createdBy: ctx.data.perms.userId, status: "submitting" };
-    await ctx.data.saveQuizRequest(record);
-    try {
-      const title = `quiz-request-${cohort.id}-${Date.now()}.json`;
-      const res = await ctx.data.drive("create_file", {
-        title, parentId: cfg.requestsFolderId, textContent: JSON.stringify(body),
-        contentMimeType: "application/json", disableConversionToGoogleType: true,
-      });
-      const fileId = res && res.payload && (res.payload.id || (res.payload.file && res.payload.file.id)) || null;
-      await ctx.data.saveQuizRequest({ ...record, status: "submitted", fileId, fileName: title });
-      return { ok: true, requestId };
-    } catch (e) {
-      console.warn("quiz: create request file", e && e.code);
-      // server_unavailable/upstream_error are ambiguous for writes: the file may exist. Say so; don't retry on our own.
-      const ambiguous = e && (e.code === "server_unavailable" || e.code === "upstream_error");
-      await ctx.data.saveQuizRequest({ ...record, status: ambiguous ? "unknown" : "failed", error: driveErrorText(e) });
-      return { ok: false, requestId, error: driveErrorText(e) + (ambiguous ? " The request may still have gone through: refresh before trying again." : "") };
-    }
-  }
-
-  const traineePayload = (cohort) => cohort.trainees.map((t) => ({ id: t.id, name: t.name, email: String(t.email || "").trim().toLowerCase() }));
 
   /* ---------------------------------------------------------------- the tool */
 
   let editingConfig = false;
   let autoLoaded = false;
+  const currentGen = (ctx) => ctx.data.quizGenerations.find((g) => g.id === ui.generationId);
 
   TrainerHub.registerTool({
     id: "quiz",
     name: "Quiz Generator",
     short: "Quiz",
-    description: "Send each trainee a private, randomized quiz in Slack. Scores are visible to trainers only.",
+    description: "Send each trainee a private, randomized quiz from your Slack. Scores are visible to trainers only.",
     icon: '<path d="M9 9a3 3 0 1 1 4 2.8c-.6.3-1 .9-1 1.6V14"/><circle cx="12" cy="17.5" r=".6" fill="currentColor"/><rect x="3" y="3" width="18" height="18" rx="3"/>',
-    // Trainer-only: hidden unless the viewer can manage classes. The backend checks TRAINER_EMAILS too.
+    // Trainer-only: hidden unless the viewer can manage classes. Quiz records are editor-only in the database too.
     visible: (ctx) => !!ctx.data.perms.manageClasses,
 
     render(ctx) {
       if (!ctx.data.perms.manageClasses) return TrainerHub.placeholder("Not available", "The Quiz Generator is for trainers who can manage classes.");
-      if (ctx.data.mode === "local") return TrainerHub.placeholder("Open the shared dashboard", "The Quiz Generator works in the shared dashboard link, where it can reach Google Drive.");
+      if (ctx.data.mode === "local") return TrainerHub.placeholder("Open the shared dashboard", "The Quiz Generator works in the shared dashboard link, where it can reach Google Drive and Slack.");
       const cfg = ctx.data.quizConfig;
-      if (!cfg || !cfg.controlSheetId || !cfg.requestsFolderId || editingConfig) return setupCard(ctx, editingConfig);
+      if (!cfg || !cfg.controlSheetId || editingConfig) return setupCard(ctx, editingConfig);
       if (!autoLoaded) { autoLoaded = true; setTimeout(() => loadSheet(ctx), 0); }
 
-      const sheet = ui.sheet.data;
       const cohort = ctx.data.getCohort(ui.classId) || null;
       return `
-        ${sheetBar(ctx)}
+        ${sheetBar()}
         <div class="quiz-grid">
-          <div class="stack">${topicSection(sheet)}</div>
-          <div class="stack">${classSection(ctx, cohort, sheet)}${settingsSection(ctx, cohort)}</div>
+          <div class="stack">${topicSection(ui.sheet.bank)}</div>
+          <div class="stack">${classSection(ctx, cohort)}${settingsSection(cohort)}</div>
         </div>
-        ${generateSection(ctx, cohort, sheet)}
+        ${generateSection(ctx, cohort)}
         ${resultsSection(ctx, cohort)}`;
     },
 
     actions: {
       saveConfig(el, ctx) {
         const controlSheetId = parseId(document.getElementById("quiz-sheet-id").value);
-        const requestsFolderId = parseId(document.getElementById("quiz-folder-id").value);
-        if (!controlSheetId || !requestsFolderId) { toast("Add both the Control Sheet and the Requests folder."); return; }
-        ctx.data.saveQuizConfig({ controlSheetId, requestsFolderId });
+        const exportFolderId = parseId(document.getElementById("quiz-folder-id").value);
+        if (!controlSheetId) { toast("Add the Control Sheet link."); return; }
+        ctx.data.saveQuizConfig({ controlSheetId, exportFolderId });
         editingConfig = false;
         autoLoaded = false;
-        ui.sheet = { status: "idle", data: null, error: null, loadedAt: null };
+        ui.sheet = { status: "idle", bank: null, error: null, loadedAt: null };
         ctx.rerender();
       },
       editConfig(el, ctx) { editingConfig = true; ctx.rerender(); },
       cancelConfig(el, ctx) { editingConfig = false; ctx.rerender(); },
-      refresh(el, ctx) { loadSheet(ctx); },
+      reloadSheet(el, ctx) { loadSheet(ctx); },
 
       topicSearch(el, ctx) { ui.topicQuery = el.value; ctx.rerender(); },
       toggleTopic(el, ctx) {
@@ -533,85 +698,113 @@
       myOnly(el, ctx) { ui.myOnly = el.checked; ui.page = 0; ctx.rerender(); },
       page(el, ctx) { ui.page += Number(el.dataset.dir); ctx.rerender(); },
       pickClass(el, ctx) {
-        if (ui.classId !== el.dataset.id) { ui.classId = el.dataset.id; ui.day = null; ui.showDay = null; ui.generationId = null; }
+        if (ui.classId !== el.dataset.id) { ui.classId = el.dataset.id; ui.day = null; ui.showDay = null; ui.generationId = null; ui.lastSubmit = null; }
         ctx.rerender();
       },
       setDay(el, ctx) { ui.day = Number(el.value) || null; ctx.rerender(); },
       setLength(el, ctx) { ui.length = Math.round(Number(el.value)); ctx.rerender(); },
 
-      async resolve(el, ctx) {
-        const cohort = ctx.data.getCohort(ui.classId);
-        el.disabled = true;
-        const r = await submitRequest(ctx, "resolve-roster", { trainees: traineePayload(cohort) }, cohort);
-        toast(r.ok ? "Checking Slack accounts. Refresh in a minute." : r.error);
-        ctx.rerender();
+      check(el, ctx) {
+        if (ui.busy) return;
+        checkSlackAccounts(ctx, ctx.data.getCohort(ui.classId));
       },
 
-      async generate(el, ctx) {
+      // Dry run: shows a sample trainee message. Nothing is sent or saved.
+      preview(el, ctx) {
         const cohort = ctx.data.getCohort(ui.classId);
-        if (ui.submitting || blockers(ctx, cohort, ui.sheet.data).length) return; // double-click guard
-        ui.submitting = true;
-        el.disabled = true;
-        ctx.rerender();
-        const fields = {
-          mode: ui.weekly ? "weekly" : "regular",
-          topics: ui.weekly ? [WEEKLY.topic] : [...ui.topics],
-          quizLength: ui.weekly ? WEEKLY.length : ui.length,
-          trainingDay: ui.day,
-          trainees: traineePayload(cohort),
-        };
-        const r = await submitRequest(ctx, "generate", fields, cohort);
-        ui.submitting = false;
-        if (r.ok) {
-          ui.lastSubmit = { requestId: r.requestId, day: ui.day };
-          ui.showDay = ui.day; ui.generationId = r.requestId;
-          toast("Request submitted");
-        } else toast(r.error);
-        ctx.rerender();
+        let parts;
+        try { parts = E.formatQuiz({ className: cohort ? cohort.name : "Class", day: ui.day || 1, questions: E.buildQuiz(pool(ui.sheet.bank), quizLength()) }); }
+        catch (e) { toast(e.message); return; }
+        TrainerHub.showDialog({
+          title: "What a trainee receives",
+          wide: true,
+          html: `<p class="muted small">A sample. Every trainee gets different questions and answer order. Nothing was sent.${parts.length > 1 ? ` Long quizzes arrive as ${parts.length} messages (the rest as replies under the first).` : ""}</p>
+            ${parts.map((p) => `<pre class="slack-preview">${esc(p)}</pre>`).join("")}`,
+        });
+      },
+
+      test(el, ctx) {
+        if (ui.busy) return;
+        TrainerHub.confirmAction({
+          title: "Send yourself a test quiz?",
+          message: "A sample quiz from your current selection goes to your own Slack DMs only. No trainee gets anything and nothing is saved.",
+          confirmLabel: "Send to me", confirmKind: "",
+          onConfirm: () => sendTest(ctx, ctx.data.getCohort(ui.classId)),
+        });
+      },
+
+      generate(el, ctx) {
+        const cohort = ctx.data.getCohort(ui.classId);
+        if (ui.busy || blockers(ctx, cohort, ui.sheet.bank).length) return;
+        const ready = cohort.trainees.filter((t) => slackStatus(ctx, t.email).ok);
+        const missing = cohort.trainees.length - ready.length;
+        TrainerHub.confirmAction({
+          title: `Send the Day ${ui.day} quiz to ${plural(ready.length, "trainee")}?`,
+          message: `Each trainee gets a private DM from your Slack account with their own ${quizLength()} questions. Answers and scores are never sent to them.${missing ? ` ${missing} without a matched Slack account will be listed as failed.` : ""} Keep this page open until sending finishes.`,
+          confirmLabel: "Send quizzes", confirmKind: "",
+          onConfirm() {
+            if (ui.busy) return; // double-click guard: one run at a time
+            ui.busy = "generate";
+            generate(ctx, cohort).catch((e) => {
+              console.warn("quiz: generate", e);
+              finish(ctx, e && e.code ? slackError(e) : (e && e.message) || "Couldn't generate the quiz.");
+            });
+          },
+        });
       },
 
       showDay(el, ctx) { ui.showDay = Number(el.value); ui.generationId = null; ctx.rerender(); },
       pickGen(el, ctx) { ui.generationId = el.value; ctx.rerender(); },
 
+      refresh(el, ctx) {
+        const gen = currentGen(ctx);
+        if (ui.busy || !gen) return;
+        refreshResults(ctx, gen);
+      },
+
       viewAnswers(el, ctx) {
         if (!ctx.data.perms.manageClasses) return;
-        const sheet = ui.sheet.data;
-        const r = sheet && sheet.results.find((x) => String(x["Generation ID"]) === el.dataset.gen && String(x["Trainee ID"]) === el.dataset.trainee);
-        if (!r) return;
-        let detail = [];
-        try { detail = JSON.parse(r["Per-question detail"]); } catch { /* shown as empty */ }
+        const q = ctx.data.getQuiz(el.dataset.gen, el.dataset.trainee);
+        if (!q || !q.result) return;
+        const r = q.result;
         TrainerHub.showDialog({
-          title: `${r["Trainee name"]} · ${r["Score percentage"]}% (${r["Score"]}/${r["Total questions"]})`,
+          title: `${q.name} · ${r.pct}% (${r.score}/${r.total})`,
           wide: true,
-          html: detail.length ? `<table class="table answers"><thead><tr><th>#</th><th>Question</th><th>Answer given</th><th></th><th>Correct answer</th></tr></thead><tbody>
-            ${detail.map((d) => `<tr><td class="num">${d.n}</td><td>${esc(d.question)}</td><td>${esc(d.answerGiven)}</td>
+          html: `<p class="muted small">Submitted ${esc(fmtAt(q.submission.at))}. Their reply: “${esc(q.submission.text.slice(0, 300))}”</p>
+            <table class="table answers"><thead><tr><th>#</th><th>Question</th><th>Answer given</th><th></th><th>Correct answer</th></tr></thead><tbody>
+            ${r.detail.map((d) => `<tr><td class="num">${d.n}</td><td>${esc(d.question)}</td><td>${esc(d.answerGiven)}</td>
               <td><span class="pill ${d.correct ? "ok" : "bad"}">${d.correct ? "Correct" : "Wrong"}</span></td><td>${esc(d.correctAnswer)}</td></tr>`).join("")}
-            </tbody></table>` : `<div class="empty">No answer detail stored for this result.</div>`,
+            </tbody></table>`,
         });
       },
 
       slackMenu(el, ctx) {
         const cohort = ctx.data.getCohort(ui.classId);
-        const genId = ui.generationId;
+        const gen = currentGen(ctx);
+        if (ui.busy || !gen) return;
+        const c = counts(ctx.data.quizzesFor(gen.id));
         TrainerHub.chooseAction({
           title: "Send via Slack DM",
           message: "Nothing here sends scores or answers to trainees.",
           choices: [
-            { label: "Retry failed deliveries and remind trainees who haven't finished", value: "resend" },
-            { label: "Send me a results summary (trainer only)", value: "trainer-summary" },
+            { label: `Resend to trainees whose delivery failed (${c.failed})`, value: "resend" },
+            { label: `Remind trainees who haven't answered (${c.awaiting})`, value: "remind" },
+            { label: "Send me a results summary (only you)", value: "summary" },
           ],
           onChoose(type) {
-            const links = linksFor(ui.sheet.data, genId);
-            const message = type === "resend"
-              ? `Failed deliveries (${links.filter((l) => l["Delivery status"] === "Failed").length}) are retried. Trainees who have the quiz but haven't submitted (${counts(links).awaiting}) get this DM: “Reminder: your quiz is waiting in the message above. Tap a letter to answer.”`
-              : "You'll get a Slack DM listing each trainee's score and who hasn't submitted. It goes only to you (the Slack account matching your Google account).";
+            const message = {
+              resend: `Sends the same quiz again to ${plural(c.failed, "trainee")} whose delivery failed, using their current Slack match.${c.unknown ? ` ${c.unknown} unconfirmed sends are skipped: check your DMs with them first.` : ""}`,
+              remind: `Sends this DM to ${plural(c.awaiting, "trainee")}: “${REMINDER(gen.day)}”`,
+              summary: "Sends each trainee's score, and who hasn't submitted, to your own Slack DMs. No one else gets it.",
+            }[type];
             TrainerHub.confirmAction({
-              title: type === "resend" ? "Retry and remind?" : "Send results summary to you?",
-              message, confirmLabel: "Send",
-              async onConfirm() {
-                const r = await submitRequest(ctx, type, { generationId: genId }, cohort);
-                toast(r.ok ? "Request submitted. Refresh in a minute." : r.error);
-                ctx.rerender();
+              title: { resend: "Resend failed quizzes?", remind: "Send reminders?", summary: "Send yourself a summary?" }[type],
+              message, confirmLabel: "Send", confirmKind: "",
+              onConfirm() {
+                if (ui.busy) return;
+                if (type === "resend") retryFailed(ctx, gen, cohort);
+                else if (type === "remind") remind(ctx, gen);
+                else sendSummary(ctx, gen);
               },
             });
           },
@@ -620,15 +813,13 @@
 
       export(el, ctx) {
         const cohort = ctx.data.getCohort(ui.classId);
+        if (ui.busy || !cohort) return;
+        const day = ui.showDay;
         TrainerHub.confirmAction({
-          title: `Export Day ${ui.showDay} results?`,
-          message: `Creates a new Google Sheet with every submitted result for ${cohort.name}, Day ${ui.showDay}, in the export folder set in Apps Script.`,
-          confirmLabel: "Export",
-          async onConfirm() {
-            const r = await submitRequest(ctx, "export", { trainingDay: ui.showDay }, cohort);
-            toast(r.ok ? "Export requested. The link appears here in about a minute (refresh)." : r.error);
-            ctx.rerender();
-          },
+          title: `Export Day ${day} results?`,
+          message: `Creates a new Google Sheet in your Drive with every Day ${day} quiz for ${cohort.name}: delivery, submission time, score and answers.`,
+          confirmLabel: "Export", confirmKind: "",
+          onConfirm: () => exportDay(ctx, cohort, day),
         });
       },
     },
