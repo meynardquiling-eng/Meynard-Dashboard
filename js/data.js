@@ -52,9 +52,9 @@
     get cohorts() { return state.cohorts; },
     getCohort: findCohort,
 
-    // classType is one of TrainerHub.CLASS_TYPES; teamLead is { name } or null.
-    addCohort({ name, classType, startDate, notes, teamLead = null }) {
-      const cohort = { id: uid(), name, classType, startDate, notes, teamLead, trainees: [], createdAt: new Date().toISOString() };
+    // classType is one of TrainerHub.CLASS_TYPES; teamLead is { name } or null; slack is "#channel" or a link.
+    addCohort({ name, classType, startDate, notes, teamLead = null, slack = "" }) {
+      const cohort = { id: uid(), name, classType, startDate, notes, teamLead, slack, trainees: [], createdAt: new Date().toISOString() };
       state.cohorts.push(cohort);
       save();
       return cohort;

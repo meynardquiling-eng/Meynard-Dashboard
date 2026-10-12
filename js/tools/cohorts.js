@@ -6,6 +6,7 @@
     { name: "classType", label: "Class type", type: "select", options: CLASS_TYPES, required: true, value: c.classType },
     { name: "startDate", label: "Start date", type: "date", value: c.startDate },
     ...teamLeadFields(c.teamLead, false),
+    { name: "slack", label: "Slack Channel", value: c.slack, placeholder: "#care-wave-15 or a link to the channel" },
     { name: "notes", label: "Notes", type: "textarea", rows: 3, value: c.notes, placeholder: "Schedule, anything to remember" },
   ];
 
@@ -16,7 +17,23 @@
   const readTeamLead = (v) => (v.tlName ? { name: v.tlName } : null);
 
   // Cohort form values -> cohort fields.
-  const readCohort = (v) => ({ name: v.name, classType: v.classType, startDate: v.startDate, notes: v.notes, teamLead: readTeamLead(v) });
+  const readCohort = (v) => ({
+    name: v.name, classType: v.classType, startDate: v.startDate, notes: v.notes,
+    teamLead: readTeamLead(v), slack: readSlack(v.slack),
+  });
+
+  // "care-wave-15" -> "#care-wave-15"; links are kept as they are.
+  const readSlack = (value) => (!value || /^https?:\/\//i.test(value) || value.startsWith("#") ? value : "#" + value);
+
+  function slackRow(c) {
+    if (!c.slack) return "";
+    const isLink = /^https?:\/\//i.test(c.slack);
+    const label = isLink ? "Open channel" : c.slack;
+    const text = isLink
+      ? `<a href="${esc(c.slack)}" target="_blank" rel="noopener">${esc(label)}</a>`
+      : `<strong>${esc(label)}</strong>`;
+    return `<div class="slack-row"><span class="slack-label">Slack</span>${text}</div>`;
+  }
 
   function teamLeadRow(c) {
     if (!c.teamLead) {
@@ -101,6 +118,7 @@
             <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
           </header>
           ${teamLeadRow(c)}
+          ${slackRow(c)}
           ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
           ${traineeList(c)}
           <div class="btn-row">
