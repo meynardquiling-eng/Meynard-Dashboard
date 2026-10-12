@@ -1,8 +1,9 @@
 (function () {
-  const { esc, initials, plural, formatDate, isEmail, openForm, confirmAction, toast } = TrainerHub;
+  const { esc, initials, plural, classTypePill, formatDate, isEmail, openForm, confirmAction, toast, CLASS_TYPES } = TrainerHub;
 
   const cohortFields = (c = {}) => [
     { name: "name", label: "Cohort name", required: true, value: c.name, placeholder: "e.g. Care Wave 15" },
+    { name: "classType", label: "Class type", type: "select", options: CLASS_TYPES, required: true, value: c.classType },
     { name: "startDate", label: "Start date", type: "date", value: c.startDate },
     ...teamLeadFields(c.teamLead, false),
     { name: "notes", label: "Notes", type: "textarea", rows: 3, value: c.notes, placeholder: "Schedule, anything to remember" },
@@ -15,7 +16,7 @@
   const readTeamLead = (v) => (v.tlName ? { name: v.tlName } : null);
 
   // Cohort form values -> cohort fields.
-  const readCohort = (v) => ({ name: v.name, startDate: v.startDate, notes: v.notes, teamLead: readTeamLead(v) });
+  const readCohort = (v) => ({ name: v.name, classType: v.classType, startDate: v.startDate, notes: v.notes, teamLead: readTeamLead(v) });
 
   function teamLeadRow(c) {
     if (!c.teamLead) {
@@ -95,7 +96,7 @@
           <header class="tile-head">
             <div class="min0">
               <h2>${esc(c.name)}</h2>
-              <div class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</div>
+              <div class="meta-line">${classTypePill(c.classType)}<span class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</span></div>
             </div>
             <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
           </header>

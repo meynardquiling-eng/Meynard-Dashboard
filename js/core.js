@@ -5,6 +5,9 @@
 window.TrainerHub = (function () {
   const tools = [];
 
+  // Class types offered when creating a cohort. Add a name here to offer another choice.
+  const CLASS_TYPES = ["Transformation", "CP Gen"];
+
   /**
    * Register a tool.
    *   id           unique key, also used in the URL (#cohorts)
@@ -26,6 +29,10 @@ window.TrainerHub = (function () {
   const pill = (kind, text) => `<span class="pill ${kind}">${esc(text)}</span>`;
   const icon = (svg) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${svg}</svg>`;
   const initials = (name) => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  // Small coloured label for a cohort's class type.
+  const classTypePill = (type) =>
+    type ? `<span class="pill class-${type.toLowerCase().replace(/[^a-z]+/g, "-")}">${esc(type)}</span>` : "";
+
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
   const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -76,7 +83,8 @@ window.TrainerHub = (function () {
 
   /**
    * Open a form.
-   *   fields: [{ name, label, type: "text"|"email"|"date"|"url"|"textarea", value, required, placeholder, hint }]
+   *   fields: [{ name, label, type: "text"|"email"|"date"|"url"|"textarea"|"select", value, required, placeholder, hint, options }]
+   *   (options is a list of strings, used by type "select")
    *   onSubmit(values) returns an error message to keep the form open, or nothing to close it.
    */
   function openForm({ title, fields, submitLabel = "Save", onSubmit }) {
@@ -84,9 +92,16 @@ window.TrainerHub = (function () {
     const inputs = fields.map((f) => {
       const id = "field-" + f.name;
       const common = `id="${id}" name="${f.name}" ${f.required ? "required" : ""} placeholder="${esc(f.placeholder || "")}"`;
-      const control = f.type === "textarea"
-        ? `<textarea ${common} rows="${f.rows || 4}">${esc(f.value || "")}</textarea>`
-        : `<input ${common} type="${f.type || "text"}" value="${esc(f.value || "")}" autocomplete="off">`;
+      let control;
+      if (f.type === "textarea") {
+        control = `<textarea ${common} rows="${f.rows || 4}">${esc(f.value || "")}</textarea>`;
+      } else if (f.type === "select") {
+        const choose = `<option value="" disabled ${f.value ? "" : "selected"}>Choose…</option>`;
+        const opts = f.options.map((o) => `<option ${o === f.value ? "selected" : ""}>${esc(o)}</option>`).join("");
+        control = `<select ${common}>${choose}${opts}</select>`;
+      } else {
+        control = `<input ${common} type="${f.type || "text"}" value="${esc(f.value || "")}" autocomplete="off">`;
+      }
       return `<label class="form-field" for="${id}"><span>${esc(f.label)}</span>${control}${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</label>`;
     }).join("");
 
@@ -136,8 +151,8 @@ window.TrainerHub = (function () {
   }
 
   return {
-    tools, registerTool,
-    esc, pill, icon, initials, plural, uid, isEmail, formatDate, formatSize, placeholder,
+    tools, registerTool, CLASS_TYPES,
+    esc, pill, icon, initials, plural, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };
 })();

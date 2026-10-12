@@ -1,5 +1,5 @@
 (function () {
-  const { esc, initials, plural, formatDate } = TrainerHub;
+  const { esc, initials, plural, classTypePill, formatDate } = TrainerHub;
 
   TrainerHub.registerTool({
     id: "attendance",
@@ -33,7 +33,7 @@
             <header class="tile-head">
               <div class="min0">
                 <h2>${esc(c.name)}</h2>
-                <div class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</div>
+                <div class="meta-line">${classTypePill(c.classType)}<span class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</span></div>
                 ${c.teamLead ? `<div class="small">Team Lead: <strong>${esc(c.teamLead.name)}</strong></div>` : ""}
               </div>
               <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
