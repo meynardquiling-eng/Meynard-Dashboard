@@ -35,7 +35,13 @@
         <span class="badge-icon">${icon(tool.icon)}</span>
         <div class="min0"><h1>${esc(tool.name)}</h1><div class="sub">${esc(tool.description || "")}</div></div>
       </header>
-      <div class="${animate ? "fade-in" : ""}">${tool.render(context())}</div>`;
+      <div class="${animate ? "fade-in" : ""}">${data.ready ? tool.render(context()) : notReady()}</div>`;
+  }
+
+  function notReady() {
+    return data.mode === "connecting"
+      ? `<div class="empty big"><strong>Loading…</strong><span>Connecting to the shared dashboard.</span></div>`
+      : `<div class="empty big"><strong>Can't load the dashboard's data</strong><span>Ask the dashboard owner to share it with you, then reload.</span></div>`;
   }
 
   function runAction(spec, el, event) {
@@ -88,5 +94,7 @@
     main.scrollTop = 0;
   });
 
+  // Re-draw when data arrives or changes, including changes other people or the Slack routine make.
+  data.onChange(() => render());
   render(true);
 })();

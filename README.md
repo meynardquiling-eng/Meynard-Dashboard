@@ -5,19 +5,18 @@ A dashboard for trainers. A rail on the left switches between tools.
 | Tool | What it does |
 | --- | --- |
 | Cohorts | One tile per cohort. Add, edit and delete cohorts, each with a class type (Transformation or CP Gen). Assign a Team Lead and a Slack channel. Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
-| Attendance Checker | A tile for each cohort listing its trainees, pulled from the Cohorts tab. The tracker itself comes later. |
+| Attendance Checker | Daily Slack roll call. At 6:55 AM Central a Goodmorning message is posted in each running cohort's channel; replies by 7:00 are Present, by 7:15 Late, otherwise Absent. Shows a 4-week grid per cohort; click a day to correct it. See [ATTENDANCE.md](ATTENDANCE.md). |
 | Quiz Generator | Empty for now. |
 | Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
 | Zoom Tracker | Empty for now. |
 
 ## Where your data is saved
 
-Everything is saved **in the browser you use**:
+**Shared dashboard (the claude.ai link).** Cohorts, trainees, materials and attendance live in the dashboard's own database, and uploaded files in its asset storage. Everyone the link is shared with sees the same data, and the Slack attendance routines read and write it. Uploads there are limited to MP4/WebM video, PDF, images and text files up to 20 MB each; put PowerPoint, Word, Excel and larger videos in Google Drive and add them as links.
 
-- cohorts, trainees and material details in `localStorage`
-- uploaded files in `IndexedDB` (handles large files like videos)
+**Local copy (index.html opened from disk).** Everything is saved in that browser only (`localStorage`, plus `IndexedDB` for files) and Slack attendance can't reach it. Useful for trying changes.
 
-That means it stays after you close the tab, but it isn't shared with other people or other computers, and clearing the browser's site data deletes it. Moving to shared storage (a database, Google Drive) only requires changing `js/data.js`.
+All saving goes through `js/data.js`, which picks the right place automatically.
 
 ## Run it
 
@@ -32,6 +31,7 @@ index.html            page shell and script order
 css/tokens.css        colors, fonts, radii (light + dark). Change the look here.
 css/app.css           layout and shared components
 js/core.js            tool registry, helpers, form and confirm dialogs, toast
+js/schedule.js        attendance schedule: Central time, 20 training days, cutoffs
 js/data.js            all reads and writes (cohorts, trainees, materials, files)
 js/tools/*.js         one file per tool
 js/app.js             rail, routing (#toolId) and action dispatch

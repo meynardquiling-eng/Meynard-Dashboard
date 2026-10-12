@@ -163,6 +163,50 @@ a { color: var(--primary); }
   background: var(--primary-soft); color: var(--primary); font: 600 11px var(--f-mono);
 }
 
+/* ---------- Attendance ---------- */
+.how { display: grid; gap: 6px; margin-bottom: 16px; font-size: 13.5px; }
+.how .rules { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: 12.5px; }
+.warn-text { color: var(--warn); font-size: 13px; }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.mute { background: var(--sunk); color: var(--muted); }
+.att-card { display: grid; gap: 14px; }
+.att-card.finished { opacity: 0.85; }
+.att-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.today { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--r-md); background: var(--sunk); }
+.today-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.today-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 99px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); font-size: 12.5px; }
+.stat-chip b { font: 600 15px var(--f-mono); }
+.stat-chip.s-present b { color: var(--ok); } .stat-chip.s-late b { color: var(--warn); } .stat-chip.s-absent b { color: var(--bad); }
+
+.att { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
+.att th { font-weight: 500; color: var(--muted); }
+.att th.wk { font: 500 10.5px var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; text-align: center; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.att th.day { font: 500 10.5px var(--f-mono); text-align: center; width: 26px; }
+.att th.day span { display: block; font-size: 9.5px; opacity: 0.8; }
+.att th.day.is-today { color: var(--highlight); }
+.att th.name { text-align: left; color: var(--fg); font-weight: 500; padding-right: 10px; white-space: nowrap; position: sticky; left: 0; background: var(--panel); z-index: 1; }
+.att td { padding: 0; text-align: center; }
+.att .tot { width: 28px; text-align: center; color: var(--muted); }
+.att td.tot { color: var(--fg); }
+.att td.danger { color: var(--bad); font-weight: 600; }
+.cell {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px;
+  font: 600 10.5px var(--f-mono); color: var(--on-status); background: var(--sunk); box-shadow: inset 0 0 0 1px var(--line); position: relative;
+}
+button.cell:hover { box-shadow: inset 0 0 0 2px var(--primary); }
+.cell.s-present { background: var(--ok); box-shadow: none; }
+.cell.s-late { background: var(--warn); box-shadow: none; }
+.cell.s-absent { background: var(--bad); box-shadow: none; }
+.cell.future { background: transparent; box-shadow: inset 0 0 0 1px var(--line); opacity: 0.5; }
+.cell.is-today { outline: 2px solid var(--highlight); outline-offset: 1px; }
+.cell.manual::after { content: ""; position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 2px var(--panel); }
+.how .cell { width: 20px; height: 20px; }
+.unmatched { display: grid; gap: 8px; padding: 12px 14px; border-radius: var(--r-md); border: 1.5px dashed var(--warn); }
+.unmatched-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.unmatched select { font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 8px; }
+details summary { cursor: pointer; color: var(--primary); font-size: 13px; }
+
 /* ---------- Courseware ---------- */
 .dropzone {
   display: grid; justify-items: center; gap: 4px; text-align: center;

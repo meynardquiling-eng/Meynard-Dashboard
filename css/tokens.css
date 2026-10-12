@@ -44,6 +44,7 @@
   --ok: #138a52;      --ok-bg: rgba(19, 138, 82, 0.12);
   --warn: #b07800;    --warn-bg: rgba(230, 168, 0, 0.16);
   --bad: #d63a3f;     --bad-bg: rgba(214, 58, 63, 0.11);
+  --on-status: #ffffff; /* text on solid status colors */
 
   /* Type */
   --f-ui: "Geist", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -74,6 +75,7 @@
     --ok: #3fd18b;   --ok-bg: rgba(63, 209, 139, 0.14);
     --warn: #f5c042; --warn-bg: rgba(245, 192, 66, 0.14);
     --bad: #ff6b6f;  --bad-bg: rgba(255, 107, 111, 0.15);
+  --on-status: #07122b;
     --shadow: 0 0 0 1px var(--line);
     color-scheme: dark;
   }
@@ -94,6 +96,7 @@
   --ok: #3fd18b;   --ok-bg: rgba(63, 209, 139, 0.14);
   --warn: #f5c042; --warn-bg: rgba(245, 192, 66, 0.14);
   --bad: #ff6b6f;  --bad-bg: rgba(255, 107, 111, 0.15);
+  --on-status: #07122b;
   --shadow: 0 0 0 1px var(--line);
   color-scheme: dark;
 }

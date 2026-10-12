@@ -49,10 +49,11 @@
 
   let filter = "all";
 
-  function card(m) {
+  function card(m, ctx) {
     const kind = kindById(m.kind);
-    const open = m.source === "link"
-      ? `<a class="btn secondary" href="${esc(m.url)}" target="_blank" rel="noopener">Open</a>`
+    const href = m.source === "link" ? m.url : ctx.data.sharedFileUrl(m);
+    const open = href
+      ? `<a class="btn secondary" href="${esc(href)}" target="_blank" rel="noopener">Open</a>`
       : `<button class="btn secondary" data-action="courseware:open" data-id="${m.id}">Open</button>`;
     return `
       <article class="card material">
@@ -100,12 +101,14 @@
 
         <div class="dropzone" data-action-drop="courseware:drop">
           <strong>Drop files here</strong>
-          <span>Videos, PowerPoint, Word, PDF, Excel, images and more. For Google Slides or Google Docs, use <em>Add link</em>.</span>
+          <span>${ctx.data.mode === "shared"
+            ? "MP4 or WebM videos, PDFs and images, up to 20 MB each. For PowerPoint, Word, Excel, Google Slides, Google Docs or bigger videos, put them in Google Drive and use <em>Add link</em>."
+            : "Videos, PowerPoint, Word, PDF, Excel, images and more. For Google Slides or Google Docs, use <em>Add link</em>."}</span>
         </div>
 
         ${materials.length ? `<div class="chips">${chips}</div>` : ""}
         ${shown.length
-          ? `<div class="materials">${shown.map(card).join("")}</div>`
+          ? `<div class="materials">${shown.map((m) => card(m, ctx)).join("")}</div>`
           : materials.length ? `<div class="empty">No materials of this type.</div>` : ""}`;
     },
 
@@ -183,6 +186,8 @@
     if (!files.length) return;
     let saved = 0;
     for (const file of files) {
+      const problem = ctx.data.uploadProblem(file);
+      if (problem) { toast(problem); continue; }
       try {
         await ctx.data.addFile(file, kindForFile(file));
         saved++;
