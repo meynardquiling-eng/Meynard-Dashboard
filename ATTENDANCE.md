@@ -19,12 +19,12 @@ The same times are in `js/schedule.js`. Change both together, and update the rou
 
 ## How it runs
 
-Two Claude routines run every weekday, each in a fresh session, with the Slack connector:
+Two Claude routines run every weekday. Both fire into the Claude Code session that set them up (it holds the Slack connection and the dashboard's database access); this organization can't attach connectors to routines that start a fresh session each time. Manage them in claude.ai under Routines.
 
 | Routine | When (Central) | Does |
 | --- | --- | --- |
-| Trainer Hub · Goodmorning post | 6:55 AM, Mon–Fri | Posts the message in each running cohort's channel and saves the message id |
-| Trainer Hub · Attendance check | 7:16 AM, Mon–Fri | Reads each thread, matches replies to trainees, saves Present/Late/Absent |
+| Trainer Hub · Goodmorning post (`trig_01JQ9pwTrx93wVPwo7Dz64Eh`) | 6:55 AM, Mon–Fri | Posts the message in each running cohort's channel and saves the message id |
+| Trainer Hub · Attendance check (`trig_01WAidzFrSaqzrk3aSRFFtLt`) | 7:16 AM, Mon–Fri | Reads each thread, matches replies to trainees, saves Present/Late/Absent |
 
 Both read and write the dashboard's shared database:
 
