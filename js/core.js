@@ -150,8 +150,47 @@ window.TrainerHub = (function () {
     dialog.querySelector("[data-close]").focus();
   }
 
+  /* ---------- Fold: a tile that opens and closes ---------- */
+  // Which folds are open is remembered per browser, so a re-render (or a reload) keeps them as they were.
+  const foldState = store.get("folds", {});
+  const isFoldOpen = (key, fallback) => (key in foldState ? foldState[key] : fallback);
+  function setFoldOpen(key, open) {
+    if (foldState[key] === open) return;
+    foldState[key] = open;
+    store.set("folds", foldState);
+  }
+  /**
+   * A tile with an always-visible header (summary) that opens to show body.
+   *   key   unique and stable, e.g. "attendance:<cohortId>"
+   *   open  whether it starts open the first time it's shown
+   */
+  const fold = ({ key, open = false, summary, body, className = "" }) => `
+    <details class="card fold ${className}" data-fold="${esc(key)}" ${isFoldOpen(key, open) ? "open" : ""}>
+      <summary class="fold-head">${summary}<span class="chev" aria-hidden="true"></span></summary>
+      <div class="fold-body">${body}</div>
+    </details>`;
+
+  /** Ask the viewer to pick one of a few options. choices: [{ label, value, kind, current }] */
+  function chooseAction({ title, message, choices, onChoose }) {
+    const dialog = document.getElementById("dialog");
+    dialog.innerHTML = `
+      <div class="dialog-body">
+        <h2>${esc(title)}</h2>
+        ${message ? `<p class="muted">${esc(message)}</p>` : ""}
+        <div class="choices">
+          ${choices.map((c, i) => `<button type="button" class="choice ${c.kind || ""}" data-i="${i}" aria-pressed="${!!c.current}">${esc(c.label)}${c.current ? " <small>current</small>" : ""}</button>`).join("")}
+        </div>
+        <div class="btn-row end"><button type="button" class="btn secondary" data-close>Cancel</button></div>
+      </div>`;
+    dialog.querySelector("[data-close]").onclick = () => dialog.close();
+    dialog.querySelectorAll("[data-i]").forEach((b) => {
+      b.onclick = () => { dialog.close(); onChoose(choices[Number(b.dataset.i)].value); };
+    });
+    dialog.showModal();
+  }
+
   return {
-    tools, registerTool, CLASS_TYPES,
+    tools, registerTool, CLASS_TYPES, fold, setFoldOpen, chooseAction,
     esc, pill, icon, initials, plural, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };

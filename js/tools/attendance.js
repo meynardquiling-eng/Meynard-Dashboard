@@ -7,7 +7,6 @@
     late: { label: "Late", short: "L" },
     absent: { label: "Absent", short: "A" },
   };
-  const NEXT = { present: "late", late: "absent", absent: null, undefined: "present" };
   const PHASE_ORDER = { running: 0, upcoming: 1, unscheduled: 2, finished: 3 };
   const weekday = (date) => new Date(date + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "narrow", timeZone: "UTC" });
   const shortDate = (date) => new Date(date + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -17,6 +16,14 @@
     if (p.phase === "upcoming") return `<span class="pill info">Starts ${shortDate(p.days[0])}</span>`;
     if (p.phase === "finished") return `<span class="pill mute">Finished ${shortDate(p.days[p.days.length - 1])}</span>`;
     return `<span class="pill hot">Week ${Math.floor(p.index / 5) + 1} of 4 · Day ${p.index + 1} of ${S.TRAINING_DAYS}</span>`;
+  }
+
+  // Small "3 P · 1 L · 0 A" for today, shown on the closed tile.
+  function todayCounts(c, p, ctx) {
+    if (p.phase !== "running" || !p.isTrainingDay) return "";
+    const records = (ctx.data.getAttendance(c.id, p.today) || {}).records || {};
+    const n = (st) => c.trainees.filter((t) => records[t.id] && records[t.id].status === st).length;
+    return `<span class="mini-counts" title="Today">Today <b class="t-present">${n("present")}</b>P <b class="t-late">${n("late")}</b>L <b class="t-absent">${n("absent")}</b>A</span>`;
   }
 
   // Today's summary for a running cohort.
@@ -64,8 +71,8 @@
         const cls = `cell ${r ? "s-" + r.status : future ? "future" : "none"} ${r && r.source === "manual" ? "manual" : ""} ${d === p.today ? "is-today" : ""}`;
         return future
           ? `<td><span class="${cls}" title="${shortDate(d)}: ${label}"></span></td>`
-          : `<td><button class="${cls}" data-action="attendance:cycle" data-cohort="${c.id}" data-date="${d}" data-trainee="${t.id}"
-               title="${shortDate(d)}: ${esc(label)}. Click to change." aria-label="${esc(t.name)}, ${shortDate(d)}: ${esc(label)}">${r ? STATUS[r.status].short : ""}</button></td>`;
+          : `<td><button class="${cls}" data-action="attendance:edit" data-cohort="${c.id}" data-date="${d}" data-trainee="${t.id}"
+               title="${shortDate(d)}: ${esc(label)}. Click to edit." aria-label="${esc(t.name)}, ${shortDate(d)}: ${esc(label)}">${r ? STATUS[r.status].short : ""}</button></td>`;
       }).join("");
       return `
         <tr>
@@ -121,7 +128,8 @@
         <div class="card how">
           <strong>How it works</strong>
           <span>Every training day (Monday to Friday, 4 weeks from the start date) at <b>${S.POST_TIME} Central</b>, a Goodmorning message is posted in the cohort's Slack channel. Trainees reply "Goodmorning" in the thread.</span>
-          <span class="rules"><span class="cell s-present">P</span> by 7:00 AM <span class="cell s-late">L</span> 7:01–7:15 AM <span class="cell s-absent">A</span> no reply by 7:15 AM <span class="cell none manual"></span> changed by a trainer</span>
+          <span class="rules"><span class="cell s-present">P</span> by 7:00 AM <span class="cell s-late">L</span> 7:01–7:15 AM <span class="cell s-absent">A</span> no reply by 7:15 AM <span class="cell none manual"></span> set by a trainer</span>
+          <span class="muted small">Attendance is recorded automatically at 7:16 AM. To change a day, click it in the grid. Your changes are never overwritten by Slack.</span>
           ${ctx.data.mode === "local" ? `<span class="warn-text">You're using the copy saved in this browser. Slack attendance only appears in the shared dashboard link.</span>` : ""}
         </div>`;
 
@@ -140,37 +148,56 @@
         .sort((a, b) => PHASE_ORDER[a.p.phase] - PHASE_ORDER[b.p.phase])
         .map(({ c, p }) => {
           const missing = [!c.slack && "a Slack channel", !c.startDate && "a start date", !c.trainees.length && "trainees"].filter(Boolean);
-          return `
-            <section class="card att-card ${p.phase}">
-              <header class="att-head">
-                <div class="min0">
-                  <h2>${esc(c.name)}</h2>
-                  <div class="meta-line">
-                    ${classTypePill(c.classType)}
-                    ${c.slack ? `<span class="muted small">${esc(/^https?:/i.test(c.slack) ? "Slack channel linked" : c.slack)}</span>` : ""}
-                    ${c.teamLead ? `<span class="muted small">TL ${esc(c.teamLead.name)}</span>` : ""}
-                    <span class="muted small">${plural(c.trainees.length, "trainee")}</span>
-                  </div>
+          return TrainerHub.fold({
+            key: "attendance:" + c.id,
+            open: p.phase === "running",
+            className: "att-card " + p.phase,
+            summary: `
+              <div class="min0">
+                <h2>${esc(c.name)}</h2>
+                <div class="meta-line">
+                  ${classTypePill(c.classType)}
+                  ${c.slack ? `<span class="muted small">${esc(/^https?:/i.test(c.slack) ? "Slack channel linked" : c.slack)}</span>` : ""}
+                  <span class="muted small">${plural(c.trainees.length, "trainee")}</span>
+                  ${todayCounts(c, p, ctx)}
                 </div>
-                ${phaseLabel(p)}
-              </header>
+              </div>
+              ${phaseLabel(p)}`,
+            body: `
               ${missing.length ? `<p class="warn-text">Add ${missing.join(", ")} in <a href="#cohorts">Cohorts</a> so attendance can be taken.</p>` : ""}
               ${todayStrip(c, p, ctx)}
-              ${p.phase === "finished" ? `<details><summary>Show attendance</summary>${grid(c, p, ctx)}</details>` : grid(c, p, ctx)}
-              ${unmatched(c, p, ctx)}
-            </section>`;
+              ${grid(c, p, ctx)}
+              ${unmatched(c, p, ctx)}`,
+          });
         }).join("");
 
-      return howItWorks + `<div class="stack">${sections}</div>`;
+      return howItWorks + `<div class="folds">${sections}</div>`;
     },
 
     actions: {
-      // Click a day to correct it: Present -> Late -> Absent -> no record.
-      cycle(el, ctx) {
+      // Click a day to set it by hand. Hand-set days are never overwritten by the Slack check.
+      edit(el, ctx) {
         const { cohort, date, trainee } = el.dataset;
-        const current = ctx.data.getAttendance(cohort, date)?.records?.[trainee]?.status;
-        ctx.data.setMark(cohort, date, trainee, NEXT[current]);
-        ctx.rerender();
+        const c = ctx.data.getCohort(cohort);
+        const t = c.trainees.find((x) => x.id === trainee);
+        const r = ctx.data.getAttendance(cohort, date)?.records?.[trainee];
+        TrainerHub.chooseAction({
+          title: `${t.name} · ${shortDate(date)}`,
+          message: r
+            ? `Now: ${STATUS[r.status].label}${r.repliedAt ? `, replied in Slack at ${S.timeLabel(r.repliedAt)}` : ""}${r.source === "manual" ? ", set by a trainer" : ", from Slack"}.`
+            : "No attendance recorded for this day yet.",
+          choices: [
+            { label: "Present", value: "present", kind: "c-present", current: r?.status === "present" },
+            { label: "Late", value: "late", kind: "c-late", current: r?.status === "late" },
+            { label: "Absent", value: "absent", kind: "c-absent", current: r?.status === "absent" },
+            { label: "Clear", value: null, kind: "c-clear" },
+          ],
+          onChoose(status) {
+            ctx.data.setMark(cohort, date, trainee, status);
+            ctx.rerender();
+            TrainerHub.toast(status ? `${t.name} marked ${STATUS[status].label.toLowerCase()} for ${shortDate(date)}` : `Cleared ${t.name} for ${shortDate(date)}`);
+          },
+        });
       },
       assign(el, ctx) {
         if (!el.value) return;

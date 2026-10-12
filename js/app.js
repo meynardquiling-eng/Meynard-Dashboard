@@ -95,6 +95,12 @@
     if (el) runAction(el.dataset.action, el, e);
   });
 
+  // Remember which tiles are open. "toggle" doesn't bubble, so listen while it travels down.
+  main.addEventListener("toggle", (e) => {
+    const key = e.target.dataset && e.target.dataset.fold;
+    if (key) TrainerHub.setFoldOpen(key, e.target.open);
+  }, true);
+
   main.addEventListener("change", (e) => {
     const spec = e.target.dataset.actionChange;
     if (spec) runAction(spec, e.target, e);

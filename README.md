@@ -4,11 +4,11 @@ A dashboard for trainers. A rail on the left switches between tools.
 
 | Tool | What it does |
 | --- | --- |
-| Cohorts | One tile per cohort. Add, edit and delete cohorts, each with a class type (Transformation or CP Gen). Assign a Team Lead and a Slack channel. Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
-| Attendance Checker | Daily Slack roll call. At 6:55 AM Central a Goodmorning message is posted in each running cohort's channel; replies by 7:00 are Present, by 7:15 Late, otherwise Absent. Shows a 4-week grid per cohort; click a day to correct it. See [ATTENDANCE.md](ATTENDANCE.md). |
+| Cohorts | One tile per cohort that opens and closes. Add, edit and delete cohorts, each with a class type (Transformation or CP Gen). Assign a Team Lead and a Slack channel. Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
+| Attendance Checker | Daily Slack roll call. At 6:55 AM Central a Goodmorning message is posted in each running cohort's channel; replies by 7:00 are Present, by 7:15 Late, otherwise Absent. One tile per cohort (running cohorts open) with today's counts and a 4-week grid; click a day to set it by hand. See [ATTENDANCE.md](ATTENDANCE.md). |
 | Quiz Generator | Empty for now. |
 | Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
-| Zoom Tracker | Empty for now. |
+| Zoom Tracker | One tile per cohort; tracking comes later. |
 
 ## Where your data is saved
 

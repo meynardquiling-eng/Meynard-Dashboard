@@ -108,15 +108,19 @@
           </div>`;
       }
 
-      const tiles = cohorts.map((c) => `
-        <section class="card tile">
-          <header class="tile-head">
-            <div class="min0">
-              <h2>${esc(c.name)}</h2>
-              <div class="meta-line">${classTypePill(c.classType)}<span class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</span></div>
+      const tiles = cohorts.map((c) => TrainerHub.fold({
+        key: "cohorts:" + c.id,
+        summary: `
+          <div class="min0">
+            <h2>${esc(c.name)}</h2>
+            <div class="meta-line">
+              ${classTypePill(c.classType)}
+              <span class="muted small">${c.startDate ? "Starts " + formatDate(c.startDate) : "No start date"}</span>
+              ${c.teamLead ? `<span class="muted small">TL ${esc(c.teamLead.name)}</span>` : ""}
             </div>
-            <span class="pill info">${plural(c.trainees.length, "trainee")}</span>
-          </header>
+          </div>
+          <span class="pill info">${plural(c.trainees.length, "trainee")}</span>`,
+        body: `
           ${teamLeadRow(c)}
           ${slackRow(c)}
           ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
@@ -128,8 +132,8 @@
           <footer class="tile-foot">
             <button class="link-btn" data-action="cohorts:edit" data-cohort="${c.id}">Edit cohort</button>
             <button class="link-btn danger" data-action="cohorts:delete" data-cohort="${c.id}">Delete cohort</button>
-          </footer>
-        </section>`).join("");
+          </footer>`,
+      })).join("");
 
       const addTile = `
         <button class="add-tile" data-action="cohorts:add">
@@ -137,7 +141,7 @@
           <strong>Add cohort</strong>
         </button>`;
 
-      return toolbar + `<div class="tiles">${tiles}${addTile}</div>`;
+      return toolbar + `<div class="folds">${tiles}${addTile}</div>`;
     },
 
     actions: {
