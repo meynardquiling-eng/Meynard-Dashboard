@@ -1,16 +1,23 @@
 # Trainer Hub
 
-A dashboard for trainers. A rail on the left switches between five tools; the buttons at the top switch the cohort.
+A dashboard for trainers. A rail on the left switches between tools.
 
 | Tool | What it does |
 | --- | --- |
-| Cohorts | Every cohort with its stage, current module, quiz average and status. Click a row to make it current. |
-| Attendance Checker | Past attendance per trainee, plus today's roll call (P / L / A). Today's marks are saved in the browser. |
-| Quiz Generator | Builds a quiz from a module's question bank, shows the answers, and copies it to the clipboard. |
-| Courseware | Modules in order with their materials and progress. |
-| Zoom Tracker | The live session, who isn't in the call, and past sessions. |
+| Cohorts | Add, edit and delete cohorts. Add trainees (name + work Gmail) one at a time or paste a list. Edit or remove trainees. |
+| Attendance Checker | A tile for each cohort listing its trainees, pulled from the Cohorts tab. The tracker itself comes later. |
+| Quiz Generator | Empty for now. |
+| Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
+| Zoom Tracker | Empty for now. |
 
-All data is sample data in `js/data.js`.
+## Where your data is saved
+
+Everything is saved **in the browser you use**:
+
+- cohorts, trainees and material details in `localStorage`
+- uploaded files in `IndexedDB` (handles large files like videos)
+
+That means it stays after you close the tab, but it isn't shared with other people or other computers, and clearing the browser's site data deletes it. Moving to shared storage (a database, Google Drive) only requires changing `js/data.js`.
 
 ## Run it
 
@@ -23,11 +30,11 @@ To serve it locally instead: `python3 -m http.server` and open http://localhost:
 ```
 index.html            page shell and script order
 css/tokens.css        colors, fonts, radii (light + dark). Change the look here.
-css/app.css           layout and shared components (cards, stats, tables, pills, buttons)
-js/core.js            tool registry + shared helpers (esc, pill, icon, toast, store)
-js/data.js            sample data: modules, question bank, cohorts, trainees, Zoom sessions
+css/app.css           layout and shared components
+js/core.js            tool registry, helpers, form and confirm dialogs, toast
+js/data.js            all reads and writes (cohorts, trainees, materials, files)
 js/tools/*.js         one file per tool
-js/app.js             rail, cohort switcher, routing (#toolId) and action dispatch
+js/app.js             rail, routing (#toolId) and action dispatch
 ```
 
 ## Common edits
@@ -39,21 +46,21 @@ TrainerHub.registerTool({
   id: "mytool",                 // also the URL: index.html#mytool
   name: "My Tool",              // page title
   short: "Mine",                // label under the rail icon
+  description: "What this tool is for.",
   icon: '<circle cx="12" cy="12" r="9"/>',  // 24x24 stroke SVG
-  render(cohort, ctx) {
-    return `<div class="card"><h2>Hello ${cohort.name}</h2></div>`;
+  render(ctx) {
+    return `<button class="btn" data-action="mytool:hello">Say hi</button>`;
   },
   actions: {
-    // <button data-action="mytool:hello">  calls this
     hello(el, ctx) { TrainerHub.toast("Hi!"); },
   },
 });
 ```
 
-Then add `<script src="js/tools/mytool.js"></script>` to `index.html` before `js/app.js`. The rail picks it up automatically. The rail order follows the script order.
+Then add `<script src="js/tools/mytool.js"></script>` to `index.html` before `js/app.js`. The rail order follows the script order.
 
-**Change colors.** Edit `css/tokens.css`. The brand is blue (`--blue-*`) with orange (`--orange-500`) for highlights. Status colors (`--ok`, `--warn`, `--bad`) are kept separate from the brand.
+**Ask for input.** Use `TrainerHub.openForm({ title, fields, onSubmit })` for a form and `TrainerHub.confirmAction({ title, message, onConfirm })` before deleting. After changing data, call `ctx.rerender()`.
 
-**Use real data.** Replace the contents of `js/data.js`, keeping the same shape. To load from an API later, fetch the data and set `TrainerHub.data` before `js/app.js` runs.
+**Support a new file type in Courseware.** Add a row to `KINDS` in `js/tools/courseware.js` and a color in `css/tokens.css` (`--type-*`).
 
-**Generate quizzes with AI.** Replace `buildQuiz` in `js/tools/quiz.js` with a call to your API. It should return `[{ q, options: [...], answer: index }]`.
+**Change colors.** Edit `css/tokens.css`. The brand is blue (`--blue-*`) with orange (`--orange-500`) for highlights.

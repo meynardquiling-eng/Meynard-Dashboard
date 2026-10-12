@@ -31,6 +31,15 @@
   --rail-fg: #9fb2e6;
   --rail-active: #ffffff;
 
+  /* Courseware file types */
+  --type-video: #6d4aff;
+  --type-slides: #e8590c;
+  --type-doc: #1f4fe0;
+  --type-pdf: #d63a3f;
+  --type-sheet: #138a52;
+  --type-media: #0e8fa8;
+  --type-link: #5d6886;
+
   /* Status (separate from brand colors) */
   --ok: #138a52;      --ok-bg: rgba(19, 138, 82, 0.12);
   --warn: #b07800;    --warn-bg: rgba(230, 168, 0, 0.16);

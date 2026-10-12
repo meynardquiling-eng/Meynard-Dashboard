@@ -15,9 +15,10 @@
     <nav class="rail" id="rail" aria-label="Tools"></nav>
     <main class="main" id="main"></main>
   </div>
+  <dialog id="dialog"></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <!-- Order matters: core, then data, then each tool, then the app shell. -->
+  <!-- Order matters: core, then data, then each tool (rail order), then the app shell. -->
   <script src="js/core.js"></script>
   <script src="js/data.js"></script>
   <script src="js/tools/cohorts.js"></script>
