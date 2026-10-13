@@ -312,15 +312,31 @@
     return null;
   }
 
-  /** From slack_read_channel / slack_read_thread (detailed) text: [{ name, email, userId, ts, text }]. */
+  /**
+   * From slack_read_channel / slack_read_thread (detailed) text: [{ name, email, userId, at, ts, text }].
+   * The two tools use different layouts (both seen in real calls):
+   *   channel: "=== Message from Name <email> (U…) at <time> ===\nMessage TS: <ts>\n<text>"
+   *   thread:  "From: Name <email> (U…)\nTime: <time>\nMessage TS: <ts>\n<text>", between
+   *            "=== THREAD PARENT MESSAGE ===" / "--- Reply 1 of 2 ---" markers
+   */
   function parseMessages(text) {
     const out = [];
-    const re = /=== Message from (.*?) (?:<([^>]*)> )?\((U[A-Z0-9]+|B[A-Z0-9]+)\) at ([^=]*?) ===\s*\n?Message TS: (\d+\.\d+)\s*\n?([\s\S]*?)(?=\n?=== Message from |$)/g;
-    for (const m of String(text).matchAll(re)) {
-      out.push({ name: m[1].trim(), email: (m[2] || "").trim(), userId: m[3], at: m[4].trim(), ts: m[5], text: m[6].replace(/\s*(Reactions?:|Thread:)[\s\S]*$/, "").trim() });
+    const clean = (t) => t.replace(/\s*(Reactions?:|Thread:)[\s\S]*$/, "").trim();
+    const channel = /=== Message from (.*?) (?:<([^>]*)> )?\((U[A-Z0-9]+|B[A-Z0-9]+)\) at ([^=]*?) ===\s*\n?Message TS: (\d+\.\d+)\s*\n?([\s\S]*?)(?=\n?=== Message from |$)/g;
+    for (const m of String(text).matchAll(channel)) {
+      out.push({ name: m[1].trim(), email: (m[2] || "").trim(), userId: m[3], at: m[4].trim(), ts: m[5], text: clean(m[6]) });
+    }
+    const thread = /(?:^|\n)From: (.*?) (?:<([^>]*)> )?\((U[A-Z0-9]+|B[A-Z0-9]+)\)\s*\nTime: ([^\n]*)\nMessage TS: (\d+\.\d+)\s*\n?([\s\S]*?)(?=\n+(?:--- Reply \d+ of \d+ ---|=== THREAD [A-Z ]+ ===)|$)/g;
+    for (const m of String(text).matchAll(thread)) {
+      if (out.some((x) => x.ts === m[5])) continue;
+      out.push({ name: m[1].trim(), email: (m[2] || "").trim(), userId: m[3], at: m[4].trim(), ts: m[5], text: clean(m[6]) });
     }
     return out;
   }
+
+  // A message that is part of a quiz (questions with lettered choices), not an answer to one. Matters
+  // when the trainer sends a test quiz to themselves: the quiz parts and the reply have the same author.
+  const looksLikeQuiz = (t) => /(^|\n)\s*A\. .+\n\s*B\. /.test(String(t));
 
   /** From slack_read_user_profile (detailed) text: "User ID: U08…". */
   function parseProfileId(text) {
@@ -340,7 +356,7 @@
   /** The trainee's first reply after the quiz message that contains at least one answer. */
   function firstSubmission(messages, slackUserId, afterTs, n) {
     const mine = messages
-      .filter((m) => m.userId === slackUserId && Number(m.ts) > Number(afterTs))
+      .filter((m) => m.userId === slackUserId && Number(m.ts) > Number(afterTs) && !looksLikeQuiz(m.text))
       .sort((a, b) => Number(a.ts) - Number(b.ts));
     for (const m of mine) {
       const parsed = parseAnswers(m.text, n);

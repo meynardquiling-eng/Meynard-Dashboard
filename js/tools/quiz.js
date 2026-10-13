@@ -457,13 +457,29 @@
   }
 
   // A real quiz from the current selection, sent only to the trainer. Nothing is saved.
+  // A real quiz from the current selection, sent only to the trainer and saved as a test, so
+  // "Check answers" can be tried on it end to end. No trainee gets anything.
   async function sendTest(ctx, cohort) {
     ui.busy = "test"; ctx.rerender();
     try {
       const me = await selfId(ctx);
-      const quiz = { day: ui.day || 1, slackUserId: me, questions: E.buildQuiz(pool(ctx), quizLength()) };
-      const d = await deliver(ctx, quiz, (cohort ? cohort.name : "Class") + " (TEST)");
-      finish(ctx, d.status === "delivered" ? "Test quiz sent to your own Slack DMs." : d.error);
+      const questionPool = pool(ctx);
+      const gen = {
+        id: newId(), test: true, classId: cohort.id, className: cohort.name + " (TEST)", day: ui.day || 1,
+        mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic] : [...ui.topics],
+        length: quizLength(), poolSize: questionPool.length, createdAt: new Date().toISOString(), createdBy: ctx.data.perms.userId, status: "sending",
+      };
+      const quiz = {
+        generationId: gen.id, traineeId: "me", classId: cohort.id, day: gen.day, name: "You (test)", email: "", slackUserId: me,
+        questions: E.buildQuiz(questionPool, gen.length), delivery: { status: "pending" },
+      };
+      await ctx.data.saveQuizGeneration(gen);
+      await ctx.data.saveQuiz(quiz);
+      quiz.delivery = await deliver(ctx, quiz, gen.className);
+      await ctx.data.saveQuiz(quiz);
+      await ctx.data.saveQuizGeneration({ ...gen, status: "sent", sentAt: new Date().toISOString() });
+      ui.showDay = gen.day; ui.generationId = gen.id;
+      finish(ctx, quiz.delivery.status === "delivered" ? "Test quiz sent to your own Slack DMs. Reply to it, then try Check answers under Results." : quiz.delivery.error);
     } catch (e) { console.warn("quiz: test", e && e.code); finish(ctx, e && e.code ? slackError(e) : String((e && e.message) || e)); }
   }
 
@@ -472,7 +488,7 @@
   const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
   async function exportDay(ctx, cohort, day) {
-    const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id && g.day === day);
+    const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id && g.day === day && !g.test);
     const rows = [["Class", "Training day", "Generated", "Generation ID", "Topics", "Trainee", "Email", "Slack user ID", "Delivery", "Quiz status", "Submitted", "Score", "Total", "Score %", "Answers"]];
     for (const g of gens) for (const q of ctx.data.quizzesFor(g.id).sort((a, b) => a.name.localeCompare(b.name))) {
       rows.push([cohort.name, day, fmtAt(g.createdAt), g.id, g.topics.join(", "), q.name, q.email, q.slackUserId || "", (q.delivery || {}).status || "",
@@ -680,7 +696,7 @@
           ${reasons.length ? `<ul class="reasons">${reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : `<span class="muted small">Each trainee gets their own random questions and answer order, sent privately from your Slack account.</span>`}
           <div class="btn-row">
             <button class="link-btn" data-action="quiz:preview" ${canSample ? "" : "disabled"}>Preview message</button>
-            <button class="link-btn" data-action="quiz:test" ${canSample && !ui.busy ? "" : "disabled"}>${ui.busy === "test" ? "Sending test…" : "Send me a test quiz"}</button>
+            <button class="link-btn" data-action="quiz:test" ${canSample && cohort && !ui.busy ? "" : "disabled"} title="${cohort ? "" : "Pick a class first: the test shows under that class's Results"}">${ui.busy === "test" ? "Sending test…" : "Send me a test quiz"}</button>
           </div>
           ${ui.lastSubmit ? submitStatus(ctx) : ""}
         </div>
@@ -757,13 +773,14 @@
             <label class="inline-field" for="quiz-show-day">Showing day
               <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>
             ${ofDay.length > 1 ? `<label class="inline-field" for="quiz-gen">Quiz
-              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${esc(fmtAt(g.createdAt))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
+              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${g.test ? "TEST · " : ""}${esc(fmtAt(g.createdAt))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
             <button class="btn" data-action="quiz:checkAnswers" ${ui.busy ? "disabled" : ""}>${ui.busy === "check-answers" || ui.busy === "send-results" ? "Checking" + progressText() : "Check answers"}</button>
             <button class="icon-btn" data-action="quiz:refresh" ${ui.busy ? "disabled" : ""} title="Refresh: read and grade replies without sending anything" aria-label="Refresh results">↻</button>
             <button class="icon-btn" data-action="quiz:slackMenu" ${ui.busy ? "disabled" : ""} title="Send via Slack DM" aria-label="Send via Slack DM">✉</button>
             <button class="icon-btn" data-action="quiz:export" ${ui.busy ? "disabled" : ""} title="Export the day's results to Google Sheets" aria-label="Export the day's results to Google Sheets">⇪</button>
           </div>
         </div>
+        ${gen.test ? `<p class="small"><span class="pill warn">Test</span> Sent only to you. Trainees didn't get this one, and it's left out of exports.</p>` : ""}
         <div class="muted small">Generated ${esc(fmtAt(gen.createdAt))} · ${esc(gen.topics.join(", "))} · ${esc(gen.length)} questions · ID ${esc(gen.id)}</div>
         ${stalled ? `<p class="small danger-text">Sending stopped before it finished (the page was closed?). Rows still “Sending” were not sent; check your DMs, then use ✉ to resend failed ones.</p>` : ""}
         ${busyLabel ? `<div class="muted small" role="status">${busyLabel}${progressText()}</div>` : ""}
@@ -897,7 +914,7 @@
         if (ui.busy) return;
         TrainerHub.confirmAction({
           title: "Send yourself a test quiz?",
-          message: "A sample quiz from your current selection goes to your own Slack DMs only. No trainee gets anything and nothing is saved.",
+          message: "A sample quiz from your current selection goes to your own Slack DMs only. No trainee gets anything. It shows under Results marked TEST, so after you reply you can try Check answers on it.",
           confirmLabel: "Send to me", confirmKind: "",
           onConfirm: () => sendTest(ctx, ctx.data.getCohort(ui.classId)),
         });

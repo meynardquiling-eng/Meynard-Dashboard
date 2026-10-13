@@ -233,6 +233,23 @@ test("parseMessages + firstSubmission: first reply with answers after the quiz i
   assert.strictEqual(E.firstSubmission(msgs, "U0C6RML603G", "1791825700.000000", 3), null);
 });
 
+// The slack_read_thread layout, copied from a real self-test (question text shortened).
+const THREAD = "=== THREAD PARENT MESSAGE ===\nFrom: Meynard Quiling <meynardquiling@maximizeltv.com> (U08D4U44SF2)\nTime: 2026-10-13 07:18:45 CDT\nMessage TS: 1791893925.185499\n*Class (TEST) · Day 1 quiz* (3 questions)\nReply to this message with all your answers in one reply, like: `1A 2C 3B 4D`\n\n*1.* First question?\nA. one\nB. two\nC. three\nD. four\n*Sent using* <@U09SV7J2JDP|Claude>\n\n=== THREAD REPLIES (2 total) ===\n\n--- Reply 1 of 2 ---\nFrom: Meynard Quiling <meynardquiling@maximizeltv.com> (U08D4U44SF2)\nTime: 2026-10-13 07:18:46 CDT\nMessage TS: 1791893926.243229\n*2.* An agent has 3 ZTP instances, of different levels?\nA. A 1-week suspension\nB. Final Warning\nC. A 3-day suspension\nD. Termination\n\n*3.* In step 1 a customer signs up. What comes next?\nA. yes\nB. no\nC. maybe\nD. later\n\n_End of quiz. Reply with all 3 answers in one message._\n*Sent using* <@U09SV7J2JDP|Claude>\n\n--- Reply 2 of 2 ---\nFrom: Meynard Quiling <meynardquiling@maximizeltv.com> (U08D4U44SF2)\nTime: 2026-10-13 08:11:51 CDT\nMessage TS: 1791897111.192419\n1B\n2D\n3A\n";
+
+test("parseMessages: the thread layout, and a self-test's quiz parts are not answers", () => {
+  const msgs = E.parseMessages(THREAD);
+  assert.deepStrictEqual(msgs.map((m) => m.ts), ["1791893925.185499", "1791893926.243229", "1791897111.192419"]);
+  assert.strictEqual(msgs[2].text, "1B\n2D\n3A");
+  assert.strictEqual(msgs[0].email, "meynardquiling@maximizeltv.com");
+  // Same author for quiz and reply (a test quiz to yourself): the quiz's own thread part is skipped.
+  const sub = E.firstSubmission(msgs, "U08D4U44SF2", "1791893925.185499", 3);
+  assert.deepStrictEqual(sub.answers, ["B", "D", "A"]);
+  assert.strictEqual(sub.ts, "1791897111.192419");
+  // Both layouts together (channel history + thread) don't duplicate a message.
+  const both = E.parseMessages(HISTORY + "\n" + THREAD);
+  assert.strictEqual(both.length, 7);
+});
+
 test("parseProfileId: reads the id from the real profile format", () => {
   assert.strictEqual(E.parseProfileId(E.textOf({ payload: "User ID: U08D4U44SF2\nUsername: meynardquiling\n" })), "U08D4U44SF2");
   assert.strictEqual(E.parseProfileId("Username: x"), null);

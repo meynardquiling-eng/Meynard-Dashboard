@@ -55,7 +55,7 @@ Trainees and anyone without edit access can't open these records; the database r
 4. **Check Slack accounts.** Looks up each trainee's work email in Slack. Only an exact email match counts. Nothing is sent.
 5. Check the **training day** (today, or pick one) and the **number of questions** (10–20, default 15; Weekly is always 50).
 6. **Preview message** shows a sample of what a trainee receives. Nothing is sent.
-7. **Send me a test quiz** sends a real sample quiz to your own Slack DMs only. Nothing is saved.
+7. **Send me a test quiz** sends a real sample quiz to your own Slack DMs only. It shows under the class's Results marked TEST (and is left out of exports), so you can reply to it and try **Check answers** on yourself.
 8. **Generate quiz** asks you to confirm, then sends the DMs one by one. Keep the page open until it finishes (the button shows “Sending 3 of 13…”).
 9. Later, open the class and click **Check answers**. It reads each trainee's reply, grades it, and DMs every trainee who has answered their score and the correct answers (as a reply under their quiz). Each trainee's first reply that contains answers is final; later replies are ignored. Trainees who haven't answered get nothing yet, so click again later for them; nobody gets their results twice. **↻** reads and grades replies without sending anything.
 10. **✉ Send via Slack DM**: resend to trainees whose delivery failed, remind trainees who haven't answered (the reminder never contains questions, answers or scores), or send yourself a results summary.
@@ -133,11 +133,12 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 
 | Part | Tested with | Result |
 | --- | --- | --- |
-| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 16/16 pass. Breaking the quote check or the tab-label merge makes a test fail |
+| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 17/17 pass. Breaking the quote check or the tab-label merge makes a test fail |
 | Quiz tab | Browser (Playwright) with a mocked database and viewer permissions, a Drive connector serving the real Knowledge Library text, and mocked Claude and Slack | All flows above pass, no console errors, no sideways scroll on a phone |
 | Google Drive read | **Real**: the Knowledge Library was read once through the connector | Result shape `{fileContent, title, viewUrl}` confirmed |
 | Claude question writing | **Mocked.** The real quality is only seen when you build your first topic | Review every question before approving |
-| Slack result formats | **Real, read-only** calls: user search, DM history, own profile | Parsers tested against those exact formats |
+| Slack result formats | **Real, read-only** calls: user search, DM history, thread replies, own profile | Parsers tested against those exact formats. The thread layout differs from DM history; both are read |
+| Real test quiz | Meynard's own test quiz and threaded reply, read from Slack | Graded 14/15 against the question bank; the dashboard's reply reading finds the threaded answer |
 | Slack sending | **Not done for real.** No real Slack messages were sent while building this | Use “Send me a test quiz” first |
 | Google Drive export | **Not called for real.** Argument names checked against the connector's schema | Create result shape unverified |
 | Database rules | Editor-only rules checked on the live dashboard for the earlier quiz records | Same rule level used for the new records |
