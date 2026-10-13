@@ -228,6 +228,24 @@
     return messages;
   }
 
+  /**
+   * The trainee's own results, sent only after the trainer clicks "Check answers": score, then each
+   * question with their answer and the correct one. Split between questions like formatQuiz.
+   */
+  function formatResults({ className, day, result }) {
+    const intro = `**${className} · Day ${day} quiz results**\nYour score: **${result.score} of ${result.total} (${result.pct}%)**`;
+    const blocks = result.detail.map((d) =>
+      `${d.correct ? "✅" : "❌"} **${d.n}.** ${d.question}\n      Your answer: ${d.answerGiven}` + (d.correct ? "" : `\n      Correct answer: ${d.correctAnswer}`));
+    const messages = [];
+    let current = intro;
+    for (const b of blocks) {
+      if ((current + "\n\n" + b).length > MAX_MESSAGE_CHARS) { messages.push(current); current = b; }
+      else current += "\n\n" + b;
+    }
+    messages.push(current);
+    return messages;
+  }
+
   /* ---------------- Reading and grading the reply ---------------- */
 
   /**
@@ -331,7 +349,7 @@
     return null;
   }
 
-  const api = { LETTERS, cleanTitle, topicKey, hashText, splitKnowledgeBase, questionPrompt, checkGenerated, bankQuestions, questionPool, shuffle, buildQuiz, formatQuiz, parseAnswers, grade, textOf, findUserIdByEmail, parseMessages, parseProfileId, parseSendResult, firstSubmission };
+  const api = { LETTERS, cleanTitle, topicKey, hashText, splitKnowledgeBase, questionPrompt, checkGenerated, bankQuestions, questionPool, shuffle, buildQuiz, formatQuiz, formatResults, parseAnswers, grade, textOf, findUserIdByEmail, parseMessages, parseProfileId, parseSendResult, firstSubmission };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root && root.TrainerHub) root.TrainerHub.quizEngine = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -204,6 +204,7 @@
   }
 
   function quizState(q) {
+    if (q.submission && q.resultsSent && q.resultsSent.at) return { label: "Results sent", kind: "ok" };
     if (q.submission) return { label: "Submitted", kind: "ok" };
     const d = q.delivery || {};
     if (d.status === "failed") return { label: "Delivery failed", kind: "bad" };
@@ -329,10 +330,10 @@
   }
 
   // Reads each trainee's DM (and the quiz's thread), takes their first reply with answers, grades it.
-  async function refreshResults(ctx, gen) {
+  // Returns { graded, errors, fatal } — fatal is the error text when Slack can't be used at all.
+  async function collectReplies(ctx, gen) {
     const open = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && ["delivered", "unknown"].includes(q.delivery.status) && !q.submission && q.slackUserId);
-    if (!open.length) { toast("Nothing is waiting for a reply."); return; }
-    ui.busy = "refresh"; ui.progress = { done: 0, total: open.length };
+    ui.progress = { done: 0, total: open.length };
     ctx.rerender();
     let graded = 0, errors = 0;
     for (const q of open) {
@@ -357,13 +358,52 @@
         await ctx.data.saveQuiz(next);
       } catch (e) {
         console.warn("quiz: read replies", e && e.code);
-        if (e && FATAL.includes(e.code)) return finish(ctx, slackError(e));
+        if (e && FATAL.includes(e.code)) return { graded, errors, fatal: slackError(e) };
         errors++;
         await ctx.data.saveQuiz({ ...q, refreshError: slackError(e) });
       }
       step(ctx);
     }
-    finish(ctx, `${plural(graded, "new submission")} graded${errors ? `; couldn't read ${errors} DM${errors > 1 ? "s" : ""}` : ""}.`);
+    return { graded, errors, fatal: null };
+  }
+  const readErrors = (n) => (n ? `; couldn't read ${n} DM${n > 1 ? "s" : ""}` : "");
+
+  async function refreshResults(ctx, gen) {
+    ui.busy = "refresh";
+    const r = await collectReplies(ctx, gen);
+    finish(ctx, r.fatal || `${plural(r.graded, "new submission")} graded${readErrors(r.errors)}.`);
+  }
+
+  // "Check answers": read and grade new replies, then DM each trainee who has answered their score and the
+  // correct answers, under their quiz message. Each trainee's results go out once.
+  async function checkAnswers(ctx, gen) {
+    ui.busy = "check-answers";
+    const r = await collectReplies(ctx, gen);
+    if (r.fatal) return finish(ctx, r.fatal);
+    const ready = ctx.data.quizzesFor(gen.id).filter((q) => q.result && !(q.resultsSent && q.resultsSent.at) && q.slackUserId);
+    ui.busy = "send-results"; ui.progress = { done: 0, total: ready.length };
+    ctx.rerender();
+    let sent = 0, failed = 0;
+    for (const q of ready) {
+      const d = q.delivery || {};
+      const channel = d.channel || q.slackUserId;
+      let error = null;
+      for (const part of E.formatResults({ className: gen.className, day: gen.day, result: q.result })) {
+        try {
+          await ctx.data.slack("slack_send_message", { channel_id: channel, message: part, ...(d.ts ? { thread_ts: d.ts } : {}) });
+        } catch (e) {
+          console.warn("quiz: send results", e && e.code);
+          error = slackError(e) + (ambiguous(e) ? " It may still have been sent: check your DM before sending again." : "");
+          if (e && FATAL.includes(e.code)) { await ctx.data.saveQuiz({ ...q, resultsError: error }); return finish(ctx, error); }
+          break;
+        }
+      }
+      if (error) { failed++; await ctx.data.saveQuiz({ ...q, resultsError: error }); }
+      else { sent++; await ctx.data.saveQuiz({ ...q, resultsSent: { at: new Date().toISOString() }, resultsError: null }); }
+      step(ctx);
+    }
+    const waiting = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && q.delivery.status === "delivered" && !q.submission).length;
+    finish(ctx, `${plural(r.graded, "new submission")} graded. Results sent to ${plural(sent, "trainee")}${failed ? `; ${failed} failed` : ""}${waiting ? `; ${waiting} still haven't answered` : ""}${readErrors(r.errors)}.`);
   }
 
   async function retryFailed(ctx, gen, cohort) {
@@ -691,7 +731,7 @@
       return `<tr>
         <td><strong>${esc(q.name)}</strong></td>
         <td class="small">${esc(q.email)}${q.slackUserId ? `<br><span class="muted">${esc(q.slackUserId)}</span>` : ""}</td>
-        <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}</td>
+        <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}${q.resultsError && !(q.resultsSent && q.resultsSent.at) ? `<br><span class="small danger-text">Results not sent: ${esc(q.resultsError)}</span>` : ""}</td>
         <td><span class="pill ${st.kind}">${esc(st.label)}</span>${q.submission && answered < q.questions.length ? `<br><span class="small muted">Answered ${answered} of ${q.questions.length}</span>` : ""}</td>
         <td class="small">${q.submission ? esc(fmtAt(q.submission.at)) : ""}</td>
         <td class="num"><strong>${q.result ? esc(q.result.pct) + "%" : "—"}</strong></td>
@@ -699,7 +739,7 @@
       </tr>`;
     }).join("");
     const link = ui.exportLinks[`${cohort.id}_${ui.showDay}`];
-    const busyLabel = { refresh: "Reading replies from Slack", send: "Sending", export: "Creating spreadsheet" }[ui.busy];
+    const busyLabel = { refresh: "Reading replies from Slack", "check-answers": "Reading and grading replies", "send-results": "Sending results to trainees", send: "Sending", export: "Creating spreadsheet" }[ui.busy];
     const stalled = gen.status === "sending" && !(ui.busy === "generate" && ui.lastSubmit && ui.lastSubmit.genId === gen.id);
 
     return `
@@ -711,7 +751,8 @@
               <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>
             ${ofDay.length > 1 ? `<label class="inline-field" for="quiz-gen">Quiz
               <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${esc(fmtAt(g.createdAt))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
-            <button class="icon-btn" data-action="quiz:refresh" ${ui.busy ? "disabled" : ""} title="Refresh: read replies from Slack and grade them" aria-label="Refresh results">↻</button>
+            <button class="btn" data-action="quiz:checkAnswers" ${ui.busy ? "disabled" : ""}>${ui.busy === "check-answers" || ui.busy === "send-results" ? "Checking" + progressText() : "Check answers"}</button>
+            <button class="icon-btn" data-action="quiz:refresh" ${ui.busy ? "disabled" : ""} title="Refresh: read and grade replies without sending anything" aria-label="Refresh results">↻</button>
             <button class="icon-btn" data-action="quiz:slackMenu" ${ui.busy ? "disabled" : ""} title="Send via Slack DM" aria-label="Send via Slack DM">✉</button>
             <button class="icon-btn" data-action="quiz:export" ${ui.busy ? "disabled" : ""} title="Export the day's results to Google Sheets" aria-label="Export the day's results to Google Sheets">⇪</button>
           </div>
@@ -862,7 +903,7 @@
         const missing = cohort.trainees.length - ready.length;
         TrainerHub.confirmAction({
           title: `Send the Day ${ui.day} quiz to ${plural(ready.length, "trainee")}?`,
-          message: `Each trainee gets a private DM from your Slack account with their own ${quizLength()} questions. Answers and scores are never sent to them.${missing ? ` ${missing} without a matched Slack account will be listed as failed.` : ""} Keep this page open until sending finishes.`,
+          message: `Each trainee gets a private DM from your Slack account with their own ${quizLength()} questions. The quiz has no answers in it; scores and correct answers go to each trainee only when you click “Check answers”.${missing ? ` ${missing} without a matched Slack account will be listed as failed.` : ""} Keep this page open until sending finishes.`,
           confirmLabel: "Send quizzes", confirmKind: "",
           onConfirm() {
             if (ui.busy) return; // double-click guard: one run at a time
@@ -878,6 +919,20 @@
       showDay(el, ctx) { ui.showDay = Number(el.value); ui.generationId = null; ctx.rerender(); },
       pickGen(el, ctx) { ui.generationId = el.value; ctx.rerender(); },
 
+      checkAnswers(el, ctx) {
+        const gen = currentGen(ctx);
+        if (ui.busy || !gen) return;
+        TrainerHub.confirmAction({
+          title: "Check answers and send results?",
+          message: "Reads every trainee's reply in Slack and grades it. Then each trainee who has answered gets a private DM, under their quiz, with their score and the correct answers. Trainees who haven't answered get nothing yet, so click again later for them. Once results go out, someone who hasn't answered could be shown the answers.",
+          confirmLabel: "Check and send", confirmKind: "",
+          onConfirm() {
+            if (ui.busy) return;
+            ui.busy = "check-answers";
+            checkAnswers(ctx, gen).catch((e) => { console.warn("quiz: check answers", e); finish(ctx, "Couldn't finish checking answers. Try again."); });
+          },
+        });
+      },
       refresh(el, ctx) {
         const gen = currentGen(ctx);
         if (ui.busy || !gen) return;

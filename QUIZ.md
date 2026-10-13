@@ -2,7 +2,7 @@
 
 Topics come from the **Homeaglow Care Knowledge Library** (a Google Doc): one topic per article. For a topic, Claude writes multiple-choice questions **only from that article**, each with the sentence that proves its answer. The trainer approves the good ones once; they go into the question bank and are reused.
 
-A trainer picks topics (or the Weekly Quiz) and a class, then clicks **Generate quiz**. Each trainee gets their own quiz as a private Slack DM **from the trainer's own Slack account**: a random subset of questions, in random order, with the answer choices shuffled. The trainee answers with one reply (`1A 2C 3B …`). **Refresh** reads the replies and grades them in the dashboard. Trainees never see a score or the correct answers. Trainers see scores and every answer in the Quiz tab.
+A trainer picks topics (or the Weekly Quiz) and a class, then clicks **Generate quiz**. Each trainee gets their own quiz as a private Slack DM **from the trainer's own Slack account**: a random subset of questions, in random order, with the answer choices shuffled. The trainee answers with one reply (`1A 2C 3B …`). **Check answers** reads the replies, grades them, and sends each trainee who has answered a private DM with their score and the correct answers. The quiz itself never contains answers. Trainers see scores and every answer in the Quiz tab.
 
 No Slack app, no Apps Script, no spreadsheet and no Requests folder are needed.
 
@@ -57,7 +57,7 @@ Trainees and anyone without edit access can't open these records; the database r
 6. **Preview message** shows a sample of what a trainee receives. Nothing is sent.
 7. **Send me a test quiz** sends a real sample quiz to your own Slack DMs only. Nothing is saved.
 8. **Generate quiz** asks you to confirm, then sends the DMs one by one. Keep the page open until it finishes (the button shows “Sending 3 of 13…”).
-9. Later, open the class and press **↻ Refresh** to read replies and grade them. Each trainee's first reply that contains answers is final; later replies are ignored.
+9. Later, open the class and click **Check answers**. It reads each trainee's reply, grades it, and DMs every trainee who has answered their score and the correct answers (as a reply under their quiz). Each trainee's first reply that contains answers is final; later replies are ignored. Trainees who haven't answered get nothing yet, so click again later for them; nobody gets their results twice. **↻** reads and grades replies without sending anything.
 10. **✉ Send via Slack DM**: resend to trainees whose delivery failed, remind trainees who haven't answered (the reminder never contains questions, answers or scores), or send yourself a results summary.
 11. **⇪ Export** creates a new Google Sheet with every quiz for the day shown.
 
@@ -88,7 +88,8 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 - **Messages come from your account.** Trainees see the quiz in their DM with you, and their replies land there too. Anyone who can read your Slack DMs could see them.
 - **Sending happens in your browser.** If you close the page mid-send, the rest aren't sent. Every quiz is saved before sending starts, so the Results table shows who is still “Sending”; use ✉ → Resend for the ones that failed.
 - **An unclear send is not retried automatically.** If Slack times out, the row says “Unconfirmed: check your DM with this trainee before resending”. A reply from that trainee still gets graded on Refresh.
-- **Results update when you press Refresh**, not live.
+- **Results update when you click Check answers (or ↻)**, not live.
+- **Answers can travel.** Once a trainee has their results, they could show the correct answers to someone who hasn't answered yet. Trainees get different questions, but topics overlap. Click Check answers after everyone has replied, or after the deadline you set.
 - **A trainee could change a reply in Slack** before you refresh. The dashboard grades the text it reads at the first Refresh after the reply and never re-grades it.
 - **Questions are only as right as the article.** Claude is told to use only the article, and each question carries its supporting quote, but always review before approving.
 - **The Knowledge Library is read when the Quiz tab opens** (⟳ reloads it). Topics are found by headings, so renaming an article starts a new, empty topic; its old questions stay in the bank and still count toward the Weekly Quiz.
@@ -112,7 +113,8 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 | Weekly locks topics; picking a topic leaves Weekly | UI test |
 | Quiz length 10–20 | UI blocks values outside the range with a reason |
 | Not enough questions explained | Engine test and UI test (“Only 14 eligible questions…; 15 needed”) |
-| Trainee message has no answers or scores | Engine test and UI test: no sent trainee message contains “score”, “%”, “correct answer” or “wrong” |
+| Quiz message has no answers or scores | Engine test and UI test: no quiz DM contains a score, “%”, “correct answer”, the explanation or the supporting quote |
+| Check answers | Engine test: results message has the score, each answer, and the correct answer only where it was wrong. UI test: results go only to trainees who answered, as a reply under their own quiz; nobody gets them twice; trainees who haven't answered get nothing |
 | Only DMs, never a channel | UI test: every send goes to a user ID |
 | Long quizzes split safely | Engine test: 50 long questions split between questions, every part under Slack's limit, each question exactly once |
 | Reply parsing | Engine test: numbered, lowercase, punctuation, letters-only, duplicates, out-of-range, chat messages ignored |
@@ -131,7 +133,7 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 
 | Part | Tested with | Result |
 | --- | --- | --- |
-| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 15/15 pass. Breaking the quote check or the tab-label merge makes a test fail |
+| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 16/16 pass. Breaking the quote check or the tab-label merge makes a test fail |
 | Quiz tab | Browser (Playwright) with a mocked database and viewer permissions, a Drive connector serving the real Knowledge Library text, and mocked Claude and Slack | All flows above pass, no console errors, no sideways scroll on a phone |
 | Google Drive read | **Real**: the Knowledge Library was read once through the connector | Result shape `{fileContent, title, viewUrl}` confirmed |
 | Claude question writing | **Mocked.** The real quality is only seen when you build your first topic | Review every question before approving |

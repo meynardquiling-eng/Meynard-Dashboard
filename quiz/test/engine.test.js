@@ -162,6 +162,24 @@ test("formatQuiz: long quizzes split between questions, each part under the limi
   assert.ok(msgs[msgs.length - 1].includes("Reply with all 50 answers"));
 });
 
+test("formatResults: score, the trainee's answers and the correct ones, split safely", () => {
+  const q = [
+    { id: "Q1", topic: "T", question: "one", choices: { A: "a", B: "b", C: "c", D: "d" }, correct: "B", order: ["D", "B", "A", "C"] },
+    { id: "Q2", topic: "T", question: "two", choices: { A: "yes", B: "no", C: "maybe", D: "later" }, correct: "A", order: ["B", "A", "C", "D"] },
+  ];
+  const r = E.grade(q, ["B", "A"]);
+  const [msg, ...rest] = E.formatResults({ className: "Care Wave", day: 3, result: r });
+  assert.strictEqual(rest.length, 0);
+  assert.ok(msg.includes("Care Wave · Day 3 quiz results"));
+  assert.ok(msg.includes("Your score: **1 of 2 (50%)**"));
+  assert.ok(msg.includes("✅ **1.** one\n      Your answer: B. b") && !msg.split("**2.**")[0].includes("Correct answer"), "a right answer shows no correction");
+  assert.ok(msg.includes("❌ **2.** two\n      Your answer: A. no\n      Correct answer: B. yes"));
+  const big = E.grade(Array.from({ length: 50 }, (_, i) => ({ ...q[0], id: "L" + i, question: "long ".repeat(60) + i })), []);
+  const parts = E.formatResults({ className: "C", day: 1, result: big });
+  assert.ok(parts.length > 1 && parts.every((m) => m.length <= 3800 + 200));
+  for (let i = 1; i <= 50; i++) assert.strictEqual(parts.filter((m) => m.includes(`**${i}.** `)).length, 1);
+});
+
 test("parseAnswers: numbered, lowercase, punctuation, sequence, duplicates, out of range", () => {
   assert.deepStrictEqual(E.parseAnswers("1A 2c 3-B, 4) d", 4).answers, ["A", "C", "B", "D"]);
   assert.deepStrictEqual(E.parseAnswers("1. a\n2: b\n3=c", 4).answers, ["A", "B", "C", null]);
