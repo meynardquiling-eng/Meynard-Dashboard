@@ -712,10 +712,17 @@
   }
 
   function resultsSection(ctx, cohort) {
-    if (!cohort) return `<div class="card"><h2>Results</h2><div class="empty">Pick a class to see its quizzes and results.</div></div>`;
+    // Before there's a quiz to check, the button still shows, greyed out with the reason.
+    const emptyCard = (why) => `
+      <div class="card results">
+        <div class="card-head"><h2>Results</h2>
+          <button class="btn" data-action="quiz:checkAnswers" disabled title="${esc(why)}">Check answers</button></div>
+        <div class="empty">${esc(why)}</div>
+      </div>`;
+    if (!cohort) return emptyCard("Pick a class to see its quizzes and results. Check answers works once a quiz has been sent.");
     const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id);
     const days = [...new Set(gens.map((g) => g.day))].sort((a, b) => b - a);
-    if (!days.length) return `<div class="card"><h2>Results</h2><div class="empty">No quizzes generated for ${esc(cohort.name)} yet.</div></div>`;
+    if (!days.length) return emptyCard(`No quizzes sent to ${cohort.name} yet. Check answers works once a quiz has been sent.`);
     if (!days.includes(ui.showDay)) ui.showDay = days[0];
     const ofDay = gens.filter((g) => g.day === ui.showDay).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (!ofDay.some((g) => g.id === ui.generationId)) ui.generationId = ofDay[0].id;
