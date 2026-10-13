@@ -1,6 +1,6 @@
 /*
   Quiz engine: pure functions (no network, no DOM) used by the Quiz tab and by quiz/test/engine.test.js.
-    - reading the Question Bank rows
+    - splitting the Knowledge Library into topics, and asking for / checking Claude-written questions
     - building a randomized quiz per trainee
     - writing the Slack DM text (never includes answers or scores)
     - reading the trainee's reply ("1A 2C 3B …") and grading it
@@ -10,42 +10,172 @@
   const LETTERS = ["A", "B", "C", "D"];
   const MAX_MESSAGE_CHARS = 3800; // Slack allows ~5000 per message; stay well under
 
-  /* ---------------- Question Bank ---------------- */
+  /* ---------------- Knowledge base → topics ---------------- */
 
-  // Returns "" for a usable question, or why it can't be used.
-  function questionProblem(r) {
-    const active = ["", "true", "yes", "1"].includes(String(r["Active"] ?? "").trim().toLowerCase());
-    if (!active) return "inactive";
-    if (!String(r["Topic"] || "").trim()) return "missing topic";
-    if (!String(r["Question"] || "").trim()) return "missing question";
-    const filled = LETTERS.filter((L) => String(r["Choice " + L] || "").trim() !== "");
-    if (filled.length < 2) return "needs at least two choices";
-    const correct = String(r["Correct answer"] || "").trim().toUpperCase();
-    if (!LETTERS.includes(correct)) return "correct answer must be A, B, C or D";
-    if (!filled.includes(correct)) return `correct answer ${correct} points at an empty choice`;
-    return "";
+  const SKIP_TITLES = /^(table of contents)$/i;
+  const MIN_ARTICLE_CHARS = 400;   // shorter sections are tab labels or empty placeholders
+  const STOP = new Set(["the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "is", "it", "its", "my", "i", "how", "what", "when", "should", "with", "by", "kb", "ag", "knowledge", "base", "c", "cp"]);
+
+  /** "ð **Vouchers in the CRM** ð" -> "Vouchers in the CRM" (drops emoji, mis-encoded emoji bytes, markdown). */
+  function cleanTitle(line) {
+    return String(line)
+      .replace(/^#+\s*/, "")
+      .replace(/\\/g, "")
+      .replace(/\*+/g, "")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/^[^A-Za-z0-9]+/, "")
+      .replace(/[^A-Za-z0-9)?!.]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[A-Z0-9 \W]+$/, (t) => (/[A-Z]{2}/.test(t) ? t.toLowerCase().replace(/(^|\s)([a-z])/g, (m) => m.toUpperCase()) : t));
   }
 
-  /** rows from the "Question Bank" tab -> { topics: [{name, category, eligible}], questions: [...], skipped } */
-  function readBank(rows) {
-    const topics = {};
-    const questions = [];
-    let skipped = 0;
-    rows.forEach((r, i) => {
-      const name = String(r["Topic"] || "").trim();
-      if (!name && !String(r["Question"] || "").trim()) return; // blank row
-      const t = topics[name || "(no topic)"] ||= { name: name || "(no topic)", category: String(r["Category"] || "").trim() || "General", eligible: 0 };
-      if (questionProblem(r)) { skipped++; return; }
-      const choices = {};
-      LETTERS.forEach((L) => { const v = String(r["Choice " + L] || "").trim(); if (v) choices[L] = v; });
-      questions.push({
-        id: String(r["Question ID"] || "").trim() || "row" + (i + 2),
-        topic: name, question: String(r["Question"]).trim(), choices,
-        correct: String(r["Correct answer"]).trim().toUpperCase(),
-      });
-      t.eligible++;
+  const words = (s) => String(s).replace(/\([^)]*\)/g, " ").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter((w) => w && !STOP.has(w));
+
+  /** A stable id for a topic name: "Vouchers in the CRM" -> "vouchers-in-the-crm". */
+  const topicKey = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "topic";
+
+  /** Short, stable fingerprint of an article, to notice when it changes. */
+  function hashText(text) {
+    let h = 5381;
+    const t = String(text);
+    for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
+
+  // Table of contents: lines that aren't list items are category names; list items under them are articles.
+  function readContents(lines) {
+    const entries = [];
+    let category = null;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const item = line.match(/^\s*[-*]\s+(.*)$/);
+      const title = cleanTitle(item ? item[1] : line);
+      if (!title || /table of contents|helping you think/i.test(title) || /knowledge library$/i.test(title)) continue;
+      if (item) { if (category) entries.push({ title, category, words: words(title) }); }
+      else { category = title; entries.push({ title, category, words: words(title) }); } // a heading can be an article too
+    }
+    return entries;
+  }
+
+  // The contents entry whose words best match the title (Dice overlap), or null.
+  function categoryFor(name, contents) {
+    const w = new Set(words(name));
+    let best = null, bestScore = 0;
+    for (const e of contents) {
+      if (!e.words.length || !w.size) continue;
+      const shared = e.words.filter((x) => w.has(x)).length;
+      const score = (2 * shared) / (e.words.length + w.size);
+      if (score > bestScore) { best = e; bestScore = score; }
+    }
+    return best && bestScore >= 0.6 ? best.category : null;
+  }
+
+  /**
+   * The Knowledge Library text (Google Docs connector output: markdown, one "# " heading per article)
+   * -> [{ key, name, category, text, hash }] in document order. Tiny sections (a tab's label) merge into
+   * the article that follows and take its full title.
+   */
+  function splitKnowledgeBase(text) {
+    const lines = String(text || "").split("\n");
+    const sections = [];
+    let cur = null;
+    for (const line of lines) {
+      if (/^# /.test(line)) { cur = { title: cleanTitle(line), lines: [] }; sections.push(cur); }
+      else if (cur) cur.lines.push(line);
+    }
+    const tocIndex = sections.findIndex((x) => SKIP_TITLES.test(x.title));
+    const contents = tocIndex >= 0 ? readContents(sections[tocIndex].lines) : [];
+
+    const articles = [];
+    let carry = null; // a short section waiting to merge into the next one
+    sections.forEach((sec, i) => {
+      if (i === tocIndex) return;
+      const body = sec.lines.join("\n").replace(/\]\([^)]*\)/g, "]").trim(); // links add length, not meaning
+      const merged = carry ? { title: sec.title || carry.title, body: (carry.body + "\n\n" + body).trim() } : { title: sec.title, body };
+      carry = null;
+      if (merged.body.length < MIN_ARTICLE_CHARS) { carry = merged.title ? merged : null; return; }
+      if (!merged.title) return;
+      articles.push(merged);
     });
-    return { topics: Object.values(topics).sort((a, b) => a.name.localeCompare(b.name)), questions, skipped };
+
+    const seen = {};
+    let prev = null;
+    return articles.map((a) => {
+      let key = topicKey(a.title);
+      if (seen[key]) key += "-" + ++seen[key]; else seen[key] = 1;
+      // An article the contents don't list belongs with the one before it (they're sub-sections).
+      const category = categoryFor(a.title, contents) || prev || "General";
+      prev = category;
+      return { key, name: a.title, category, text: a.body, hash: hashText(a.body) };
+    });
+  }
+
+  /* ---------------- Writing questions with Claude ---------------- */
+
+  /** The instruction for one topic. Claude sees only this text. */
+  function questionPrompt({ topic, text, count, avoid = [] }) {
+    return [
+      "You write multiple-choice quiz questions for new Homeaglow Care agents in training.",
+      `Use ONLY the knowledge base article below, titled "${topic}". Do not use outside knowledge. If the article doesn't support ${count} good questions, write fewer.`,
+      "",
+      `Write ${count} questions that test what an agent must get right on the job: rules, steps, definitions, limits, which option applies, what to do or not do.`,
+      "Rules:",
+      "- Exactly four choices (A, B, C, D) and exactly one correct answer.",
+      "- Wrong choices must be believable but clearly wrong according to the article.",
+      "- No \"all of the above\", \"none of the above\" or trick wording. Don't mention \"the article\".",
+      "- Each question under 300 characters, each choice under 150 characters.",
+      "- \"quote\": one sentence copied word for word from the article that proves the correct answer.",
+      "- \"explanation\": one short sentence on why the answer is correct.",
+      avoid.length ? "- Don't repeat or closely rephrase these existing questions:\n" + avoid.map((q) => "  * " + q).join("\n") : "",
+      "",
+      'Reply with only JSON, like: {"questions":[{"question":"…","choices":{"A":"…","B":"…","C":"…","D":"…"},"correct":"B","explanation":"…","quote":"…"}]}',
+      "",
+      "<article>",
+      text,
+      "</article>",
+    ].filter((l) => l !== "").join("\n");
+  }
+
+  const squash = (s) => String(s || "").toLowerCase().replace(/[*_`#>\\]/g, "").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[^a-z0-9]+/g, " ").trim();
+
+  /**
+   * Checks Claude's reply. Malformed questions are dropped; each kept question records whether its
+   * quote was found in the article, so the trainer can see which answers are backed by the text.
+   */
+  function checkGenerated(reply, articleText, { idPrefix = "q", existing = [] } = {}) {
+    const list = Array.isArray(reply) ? reply : reply && Array.isArray(reply.questions) ? reply.questions : [];
+    const article = squash(articleText);
+    const known = new Set(existing.map(squash));
+    const questions = [];
+    let dropped = 0;
+    list.forEach((q, i) => {
+      const question = String((q && q.question) || "").trim();
+      const choices = {};
+      for (const L of LETTERS) { const v = String((q && q.choices && q.choices[L]) || "").trim(); if (v) choices[L] = v; }
+      const correct = String((q && q.correct) || "").trim().toUpperCase();
+      const distinct = new Set(Object.values(choices).map(squash)).size === Object.keys(choices).length;
+      if (!question || Object.keys(choices).length !== 4 || !choices[correct] || !distinct || known.has(squash(question))) { dropped++; return; }
+      known.add(squash(question));
+      const quote = String((q && q.quote) || "").trim();
+      questions.push({
+        id: `${idPrefix}${Date.now().toString(36)}${i}`,
+        question, choices, correct,
+        explanation: String((q && q.explanation) || "").trim(),
+        quote, quoteFound: squash(quote).length >= 15 && article.includes(squash(quote)),
+        status: "pending",
+      });
+    });
+    return { questions, dropped };
+  }
+
+  /** Approved questions from the saved bank, in the shape buildQuiz uses. */
+  function bankQuestions(bankDocs) {
+    const out = [];
+    for (const b of bankDocs) for (const q of b.questions || []) {
+      if (q.status === "approved") out.push({ id: `${b.key}:${q.id}`, topic: b.topic, question: q.question, choices: q.choices, correct: q.correct });
+    }
+    return out;
   }
 
   function questionPool(questions, { weekly, topics }) {
@@ -201,7 +331,7 @@
     return null;
   }
 
-  const api = { LETTERS, questionProblem, readBank, questionPool, shuffle, buildQuiz, formatQuiz, parseAnswers, grade, textOf, findUserIdByEmail, parseMessages, parseProfileId, parseSendResult, firstSubmission };
+  const api = { LETTERS, cleanTitle, topicKey, hashText, splitKnowledgeBase, questionPrompt, checkGenerated, bankQuestions, questionPool, shuffle, buildQuiz, formatQuiz, parseAnswers, grade, textOf, findUserIdByEmail, parseMessages, parseProfileId, parseSendResult, firstSubmission };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root && root.TrainerHub) root.TrainerHub.quizEngine = api;
 })(typeof window !== "undefined" ? window : globalThis);

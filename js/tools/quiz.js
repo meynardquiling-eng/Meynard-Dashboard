@@ -2,11 +2,14 @@
   Quiz Generator (trainer-only).
 
   Everything runs in this page, as the trainer, through their own claude.ai connectors:
-    Google Drive  reads the Control Sheet's "Question Bank" tab (downloaded as XLSX, parsed with SheetJS)
-                  and creates the results spreadsheet on Export.
+    Google Drive  reads the Knowledge Library (a Google Doc; one topic per article) and creates the
+                  results spreadsheet on Export.
+    Claude        writes questions for a topic from that topic's article only. The trainer approves them
+                  once; quizzes draw from the approved questions (the question bank).
     Slack         finds each trainee's Slack account by work email, sends each trainee their own quiz
                   as a DM from the trainer's account, and reads the trainee's reply on Refresh.
-  Quizzes, answer keys, answers and scores are saved in the dashboard database, readable by editors only.
+  The question bank, quizzes, answer keys, answers and scores are saved in the dashboard database,
+  readable by editors only.
   The quiz logic (randomizing, message text, reading and grading replies) is in js/quiz-engine.js.
   See QUIZ.md.
 */
@@ -18,7 +21,7 @@
   const REGULAR = { min: 10, max: 20, default: 15 };
   const WEEKLY = { length: 50, topic: "Weekly Quiz" };
   const CLASS_PAGE = 6;
-  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const BUILD_COUNT = 15; // questions Claude writes per request
   const REMINDER = (day) => `Reminder: your Day ${day} quiz is waiting in the message above. Reply with all your answers in one message, like \`1A 2C 3B\`.`;
 
   // UI state for this tab (per viewer, not saved).
@@ -32,7 +35,9 @@
     showDay: null, generationId: null,
     selfId: null,          // the trainer's own Slack user id
     exportLinks: {},       // "<classId>_<day>" -> spreadsheet link
-    sheet: { status: "idle", bank: null, error: null, loadedAt: null },
+    kb: { status: "idle", topics: null, title: "", error: null, loadedAt: null },
+    reviewKey: null,       // topic open in the review panel
+    building: null,        // { keys: [...], done } while Claude writes questions
   };
 
   /* ---------------------------------------------------------------- errors */
@@ -48,56 +53,100 @@
       case "server_unavailable": return `${server} didn't respond. Try again in a moment.`;
       case "upstream_error": return `${server} had a problem. Try again in a moment.`;
       case "tool_error": return `${server} reported an error: ${e.message || "unknown"}.`;
-      case "bad_sheet": return e.message;
+      case "bad_doc": return e.message;
       default: return `Couldn't reach ${server}` + (e && e.message ? ": " + e.message : ".");
     }
   }
   const slackError = (e) => connectorErrorText("Slack", e);
   const driveError = (e) => connectorErrorText("Google Drive", e);
+  function claudeError(e) {
+    switch (e && e.code) {
+      case "no_claude": return e.message;
+      case "not_granted": return "Claude wasn't allowed for this dashboard. Allow it in the dashboard's permissions, then reload.";
+      case "sampling_disabled": return "Claude isn't available for your account here.";
+      case "rate_limited": return "You've hit a Claude usage limit. Try again later.";
+      case "invalid_json": case "empty_completion": return "Claude's answer couldn't be read. Try again.";
+      case "prompt_too_large": return "This article is too long to send in one go.";
+      case "refused": return "Claude declined to write questions for this article.";
+      case "session_expired": return "Sign in to claude.ai again, then reload.";
+      default: return "Claude had a problem. Try again in a moment.";
+    }
+  }
   // A send that failed this way may still have gone out.
   const ambiguous = (e) => e && (e.code === "server_unavailable" || e.code === "upstream_error");
   const FATAL = ["server_not_connected", "needs_reauth", "not_in_manifest", "blocked_by_policy", "no_connector"];
 
-  /* ---------------------------------------------------------------- reading the Control Sheet */
+  /* ---------------------------------------------------------------- reading the Knowledge Library */
 
-  // Finds the base64 file bytes in a download_file_content result (the connector's exact shape isn't documented).
-  function extractBase64(result) {
-    const candidates = [];
-    const walk = (v, depth) => {
-      if (!v || depth > 3) return;
-      if (typeof v === "string") { candidates.push(v); try { walk(JSON.parse(v), depth + 1); } catch { /* not JSON */ } return; }
-      if (typeof v === "object") for (const k of Object.keys(v)) walk(v[k], depth + 1);
-    };
-    walk(result && result.payload, 0);
-    for (const b of (result && result.content) || []) walk(b, 0);
-    const looksB64 = (s) => s.length > 200 && /^[A-Za-z0-9+/=_\-\s]+$/.test(s);
-    const hit = candidates.filter(looksB64).sort((a, b) => b.length - a.length)[0];
-    return hit ? hit.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/") : null;
+  // read_file_content resolves {fileContent, title, viewUrl} (seen in a real call); read it defensively.
+  function docFrom(result) {
+    const p = result && result.payload;
+    if (p && typeof p === "object" && typeof p.fileContent === "string") return p;
+    const text = E.textOf(result);
+    try { const j = JSON.parse(text); if (j && typeof j.fileContent === "string") return j; } catch { /* not JSON */ }
+    return text ? { fileContent: text, title: "" } : null;
   }
 
-  function parseWorkbook(b64) {
-    const wb = XLSX.read(b64, { type: "base64" });
-    const sheet = wb.Sheets["Question Bank"];
-    if (!sheet) throw { code: "bad_sheet", message: 'The Control Sheet has no "Question Bank" tab. Copy the headers from quiz/question-bank-template.csv into a tab with that name.' };
-    return E.readBank(XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false }));
-  }
-
-  async function loadSheet(ctx) {
+  async function loadKnowledge(ctx) {
     const cfg = ctx.data.quizConfig;
-    if (!cfg || !cfg.controlSheetId) return;
-    ui.sheet = { ...ui.sheet, status: "loading", error: null };
+    if (!cfg || !cfg.knowledgeDocId) return;
+    ui.kb = { ...ui.kb, status: "loading", error: null };
     ctx.rerender();
     try {
-      const result = await ctx.data.drive("download_file_content", { fileId: cfg.controlSheetId, exportMimeType: XLSX_MIME });
-      const b64 = extractBase64(result);
-      if (!b64) throw { code: "tool_error", message: "the download didn't contain a spreadsheet. Check the Control Sheet link" };
-      if (typeof XLSX === "undefined") throw { code: "bad_sheet", message: "The spreadsheet reader (SheetJS) didn't load. Check your connection and reload." };
-      ui.sheet = { status: "ready", bank: parseWorkbook(b64), error: null, loadedAt: new Date() };
+      const doc = docFrom(await ctx.data.drive("read_file_content", { fileId: cfg.knowledgeDocId }));
+      const topics = doc ? E.splitKnowledgeBase(doc.fileContent) : [];
+      if (!topics.length) throw { code: "bad_doc", message: "No articles found in that Google Doc. Each article should start with a heading." };
+      ui.kb = { status: "ready", topics, title: doc.title || "Knowledge Library", error: null, loadedAt: new Date() };
     } catch (e) {
-      console.warn("quiz: load control sheet", e && e.code);
-      ui.sheet = { ...ui.sheet, status: "error", error: driveError(e) };
+      console.warn("quiz: load knowledge library", e && e.code);
+      ui.kb = { ...ui.kb, status: "error", error: driveError(e) };
     }
     ctx.rerender();
+  }
+
+  /* ---------------------------------------------------------------- the question bank */
+
+  const bankDoc = (ctx, topic) => ctx.data.quizBank[topic.key] || { key: topic.key, topic: topic.name, category: topic.category, questions: [] };
+  const approvedCount = (ctx, topic) => (ctx.data.quizBank[topic.key] ? ctx.data.quizBank[topic.key].questions.filter((q) => q.status === "approved").length : 0);
+  const pendingCount = (ctx, topic) => (ctx.data.quizBank[topic.key] ? ctx.data.quizBank[topic.key].questions.filter((q) => q.status === "pending").length : 0);
+  const topicByKey = (key) => (ui.kb.topics || []).find((t) => t.key === key);
+
+  // Claude writes questions for each topic from its article; they wait for the trainer's review.
+  async function buildQuestions(ctx, topics) {
+    ui.building = { keys: topics.map((t) => t.key), done: 0 };
+    ctx.rerender();
+    let added = 0, failed = null;
+    for (const topic of topics) {
+      const doc = bankDoc(ctx, topic);
+      try {
+        const reply = await ctx.data.askClaudeJson(
+          E.questionPrompt({ topic: topic.name, text: topic.text, count: BUILD_COUNT, avoid: doc.questions.map((q) => q.question) }),
+          { cache: false });
+        const { questions } = E.checkGenerated(reply, topic.text, { existing: doc.questions.map((q) => q.question) });
+        await ctx.data.saveBankTopic({ ...doc, topic: topic.name, category: topic.category, sourceHash: topic.hash, builtAt: new Date().toISOString(), questions: [...doc.questions, ...questions] });
+        added += questions.length;
+      } catch (e) {
+        console.warn("quiz: build questions", e && e.code);
+        failed = claudeError(e);
+        if (e && ["not_granted", "sampling_disabled", "no_claude", "rate_limited", "session_expired"].includes(e.code)) break;
+      }
+      ui.building.done++;
+      ctx.rerender();
+    }
+    ui.building = null;
+    if (topics.length === 1) ui.reviewKey = topics[0].key;
+    toast(failed ? `${failed}${added ? ` (${added} questions were added)` : ""}` : `${plural(added, "new question")} ready for review.`);
+    ctx.rerender();
+  }
+
+  function setStatus(ctx, key, ids, status) {
+    const doc = ctx.data.quizBank[key];
+    if (!doc) return;
+    const set = new Set(ids);
+    const questions = status === "removed"
+      ? doc.questions.filter((q) => !set.has(q.id))
+      : doc.questions.map((q) => (set.has(q.id) ? { ...q, status } : q));
+    ctx.data.saveBankTopic({ ...doc, questions });
   }
 
   /* ---------------------------------------------------------------- derived state */
@@ -131,14 +180,15 @@
     return { options, today, needsPick: !today };
   }
 
-  const pool = (bank) => (bank ? E.questionPool(bank.questions, { weekly: ui.weekly, topics: [...ui.topics] }) : []);
+  const allApproved = (ctx) => E.bankQuestions(Object.values(ctx.data.quizBank));
+  const pool = (ctx) => E.questionPool(allApproved(ctx), { weekly: ui.weekly, topics: [...ui.topics] });
   const quizLength = () => (ui.weekly ? WEEKLY.length : ui.length);
   const lengthOk = () => ui.weekly || (Number.isInteger(ui.length) && ui.length >= REGULAR.min && ui.length <= REGULAR.max);
 
-  function blockers(ctx, cohort, bank) {
+  function blockers(ctx, cohort) {
     const out = [];
     if (!ctx.data.perms.manageClasses) out.push("You need permission to manage classes.");
-    if (!bank) out.push("Load the Control Sheet.");
+    if (!ui.kb.topics) out.push("Load the Knowledge Library.");
     if (!ui.weekly && !ui.topics.size) out.push("Pick at least one topic, or the Weekly Quiz.");
     if (!cohort) out.push("Pick a class.");
     if (cohort) {
@@ -148,7 +198,7 @@
       if (!cohort.trainees.some((t) => slackStatus(ctx, t.email).ok)) out.push("No trainee has a matched Slack account yet. Use “Check Slack accounts”.");
     }
     if (!lengthOk()) out.push(`Quiz length must be ${REGULAR.min}–${REGULAR.max}.`);
-    if (bank && (ui.weekly || ui.topics.size) && pool(bank).length < quizLength()) out.push(`Only ${pool(bank).length} eligible questions in your selection; ${quizLength()} needed.`);
+    if ((ui.weekly || ui.topics.size) && pool(ctx).length < quizLength()) out.push(`Only ${pool(ctx).length} approved questions in your selection; ${quizLength()} needed. Build and approve more questions (see the topic's Review).`);
     if (ui.busy) out.push("Wait for the current Slack action to finish.");
     return out;
   }
@@ -242,7 +292,7 @@
   }
 
   async function generate(ctx, cohort) {
-    const questionPool = pool(ui.sheet.bank);
+    const questionPool = pool(ctx);
     const length = quizLength();
     const gen = {
       id: newId(), classId: cohort.id, className: cohort.name, day: ui.day,
@@ -371,7 +421,7 @@
     ui.busy = "test"; ctx.rerender();
     try {
       const me = await selfId(ctx);
-      const quiz = { day: ui.day || 1, slackUserId: me, questions: E.buildQuiz(pool(ui.sheet.bank), quizLength()) };
+      const quiz = { day: ui.day || 1, slackUserId: me, questions: E.buildQuiz(pool(ctx), quizLength()) };
       const d = await deliver(ctx, quiz, (cohort ? cohort.name : "Class") + " (TEST)");
       finish(ctx, d.status === "delivered" ? "Test quiz sent to your own Slack DMs." : d.error);
     } catch (e) { console.warn("quiz: test", e && e.code); finish(ctx, e && e.code ? slackError(e) : String((e && e.message) || e)); }
@@ -412,46 +462,51 @@
     const cfg = ctx.data.quizConfig || {};
     return `
       <div class="card quiz-setup">
-        <h2>${editing ? "Quiz settings" : "Connect your Question Bank"}</h2>
-        <p class="muted small">Paste the link to the Google Sheet with your “Question Bank” tab. Quizzes are sent from your own Slack account, so nothing else needs setting up. Details are in QUIZ.md.</p>
-        <label class="form-field" for="quiz-sheet-id"><span>Control Sheet</span><input id="quiz-sheet-id" value="${esc(cfg.controlSheetId || "")}" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
+        <h2>${editing ? "Quiz settings" : "Connect your Knowledge Library"}</h2>
+        <p class="muted small">Paste the link to the Google Doc that holds your knowledge base. Each article becomes a topic, and Claude writes questions from it for you to approve. Quizzes are sent from your own Slack account. Details are in QUIZ.md.</p>
+        <label class="form-field" for="quiz-doc-id"><span>Knowledge Library (Google Doc)</span><input id="quiz-doc-id" value="${esc(cfg.knowledgeDocId || "")}" placeholder="https://docs.google.com/document/d/…"></label>
         <label class="form-field" for="quiz-folder-id"><span>Export folder (leave blank for My Drive)</span><input id="quiz-folder-id" value="${esc(cfg.exportFolderId || "")}" placeholder="https://drive.google.com/drive/folders/…"></label>
         <div class="btn-row"><button class="btn" data-action="quiz:saveConfig">Save</button>${editing ? `<button class="btn secondary" data-action="quiz:cancelConfig">Cancel</button>` : ""}</div>
       </div>`;
   }
 
-  function sheetBar() {
-    const s = ui.sheet;
-    const when = s.loadedAt ? `Question Bank loaded ${s.loadedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
+  function knowledgeBar() {
+    const k = ui.kb;
+    const when = k.loadedAt ? `${esc(k.title)} · ${plural(k.topics.length, "topic")} · loaded ${k.loadedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
     return `
       <div class="toolbar">
-        <span class="muted small">${s.status === "loading" ? "Loading Control Sheet…" : s.status === "error" ? "" : esc(when)}${s.bank && s.bank.skipped ? ` · ${plural(s.bank.skipped, "question")} skipped (inactive or invalid)` : ""}</span>
+        <span class="muted small">${k.status === "loading" ? "Reading the Knowledge Library…" : k.status === "error" ? "" : when}</span>
         <div class="btn-row">
-          <button class="icon-btn" data-action="quiz:reloadSheet" title="Reload the Question Bank" aria-label="Reload the Question Bank">⟳</button>
+          <button class="icon-btn" data-action="quiz:reloadKnowledge" title="Reload the Knowledge Library" aria-label="Reload the Knowledge Library">⟳</button>
           <button class="icon-btn" data-action="quiz:editConfig" title="Quiz settings" aria-label="Quiz settings">⚙</button>
         </div>
       </div>
-      ${s.status === "error" ? `<div class="banner error-banner"><div class="min0"><strong>Couldn't load the Control Sheet</strong><span>${esc(s.error)}</span></div><button class="btn secondary" data-action="quiz:reloadSheet">Try again</button></div>` : ""}`;
+      ${k.status === "error" ? `<div class="banner error-banner"><div class="min0"><strong>Couldn't read the Knowledge Library</strong><span>${esc(k.error)}</span></div><button class="btn secondary" data-action="quiz:reloadKnowledge">Try again</button></div>` : ""}`;
   }
 
-  function topicSection(bank) {
-    if (!bank) return `<div class="empty">Topics appear once the Control Sheet loads.</div>`;
-    const total = bank.questions.length;
+  function topicSection(ctx) {
+    const topics = ui.kb.topics;
+    if (!topics) return `<div class="empty">Topics appear once the Knowledge Library loads.</div>`;
+    const total = allApproved(ctx).length;
     const q = ui.topicQuery.trim().toLowerCase();
     const groups = {};
-    for (const t of bank.topics) {
+    for (const t of topics) {
       if (q && !t.name.toLowerCase().includes(q) && !t.category.toLowerCase().includes(q)) continue;
       (groups[t.category] ||= []).push(t);
     }
     const weeklyOk = total >= WEEKLY.length;
-    const list = Object.keys(groups).sort().map((cat) => `
+    const short = topics.filter((t) => ui.topics.has(t.name) && approvedCount(ctx, t) < quizLength());
+    const list = Object.keys(groups).map((cat) => `
       <div class="topic-group"><div class="topic-cat">${esc(cat)}</div>
-        ${groups[cat].map((t, i) => {
-          const id = "topic-" + btoa(unescape(encodeURIComponent(t.name))).replace(/[^A-Za-z0-9]/g, "").slice(0, 40) + i;
-          const disabled = !t.eligible;
-          return `<label class="topic ${disabled ? "is-disabled" : ""} ${ui.weekly && !disabled ? "is-locked" : ""}" for="${id}">
-            <input type="checkbox" id="${id}" data-action-change="quiz:toggleTopic" data-topic="${esc(t.name)}" ${ui.topics.has(t.name) ? "checked" : ""} ${disabled ? "disabled" : ""}>
-            <span class="min0 ellipsis">${esc(t.name)}</span><span class="count">${t.eligible}</span></label>`;
+        ${groups[cat].map((t) => {
+          const id = "topic-" + t.key;
+          const ready = approvedCount(ctx, t), waiting = pendingCount(ctx, t);
+          return `<div class="topic-row ${ui.reviewKey === t.key ? "on" : ""}">
+            <label class="topic ${ui.weekly ? "is-locked" : ""}" for="${id}">
+              <input type="checkbox" id="${id}" data-action-change="quiz:toggleTopic" data-topic="${esc(t.name)}" ${ui.topics.has(t.name) ? "checked" : ""}>
+              <span class="min0 ellipsis">${esc(t.name)}</span><span class="count" title="Approved questions">${ready}</span></label>
+            <button class="link-btn small" data-action="quiz:review" data-key="${t.key}">${waiting ? `Review ${waiting}` : ready ? "Questions" : "Build"}</button>
+          </div>`;
         }).join("")}
       </div>`).join("");
     return `
@@ -459,11 +514,51 @@
         <div class="card-head"><h2>Topics</h2><span class="muted small">${ui.weekly ? "Weekly Quiz selected" : `${ui.topics.size} selected`}${ui.topics.size ? ` · <button class="link-btn" data-action="quiz:clearTopics">Clear all</button>` : ""}</span></div>
         <button class="weekly ${ui.weekly ? "on" : ""}" data-action="quiz:toggleWeekly" ${weeklyOk ? "" : "disabled"} aria-pressed="${ui.weekly}">
           <strong>Weekly Quiz</strong>
-          <span>${weeklyOk ? `Exactly ${WEEKLY.length} questions drawn from all ${total} eligible questions.` : `Needs ${WEEKLY.length} eligible questions; the bank has ${total}. Add more to the Question Bank to use it.`}</span>
+          <span>${weeklyOk ? `Exactly ${WEEKLY.length} questions drawn from all ${total} approved questions.` : `Needs ${WEEKLY.length} approved questions; the bank has ${total}. Build and approve questions for more topics to use it.`}</span>
         </button>
         ${ui.weekly ? `<p class="muted small">Weekly Quiz uses every topic, so individual topics are locked. Pick a topic to switch back to a regular quiz.</p>` : ""}
+        ${short.length && !ui.weekly ? `<div class="build-hint"><span class="small">${plural(short.length, "selected topic")} ${short.length === 1 ? "has" : "have"} fewer than ${quizLength()} approved questions.</span>
+          <button class="btn secondary" data-action="quiz:buildSelected" ${ui.building || ui.busy ? "disabled" : ""}>${ui.building ? `Writing questions ${ui.building.done + 1} of ${ui.building.keys.length}…` : `Have Claude write questions`}</button></div>` : ""}
         <input class="search" id="quiz-topic-search" type="search" placeholder="Search topics" value="${esc(ui.topicQuery)}" data-action-input="quiz:topicSearch" aria-label="Search topics">
         <div class="topic-list">${list || `<div class="muted small">No topics match.</div>`}</div>
+        <p class="muted small">The number is how many approved questions each topic has.</p>
+      </div>`;
+  }
+
+  // The question bank for one topic: Claude's questions waiting for review, and the approved ones.
+  function reviewSection(ctx) {
+    const topic = topicByKey(ui.reviewKey);
+    if (!topic) return "";
+    const doc = bankDoc(ctx, topic);
+    const pending = doc.questions.filter((q) => q.status === "pending");
+    const approved = doc.questions.filter((q) => q.status === "approved");
+    const buildingThis = ui.building && ui.building.keys[ui.building.done] === topic.key;
+    const changed = doc.sourceHash && doc.sourceHash !== topic.hash;
+    const item = (q) => `
+      <li class="bank-q ${q.status}">
+        <div class="bank-q-head"><strong>${esc(q.question)}</strong>
+          <span class="btn-row">${q.status === "pending" ? `<button class="btn small" data-action="quiz:approve" data-id="${esc(q.id)}">Approve</button>` : `<span class="pill ok">Approved</span>`}
+          <button class="btn small secondary" data-action="quiz:removeQuestion" data-id="${esc(q.id)}">Remove</button></span></div>
+        <ol class="bank-choices" type="A">${E.LETTERS.map((L) => `<li class="${L === q.correct ? "correct" : ""}">${esc(q.choices[L])}${L === q.correct ? " ✓" : ""}</li>`).join("")}</ol>
+        ${q.explanation ? `<div class="small muted">${esc(q.explanation)}</div>` : ""}
+        ${q.quote ? `<div class="small bank-quote ${q.quoteFound ? "" : "warn-text"}">${q.quoteFound ? "From the article" : "Quote not found in the article, check this one"}: “${esc(q.quote)}”</div>` : `<div class="small warn-text">No supporting quote, check this one.</div>`}
+      </li>`;
+    return `
+      <div class="card review">
+        <div class="card-head">
+          <div class="min0"><h2>${esc(topic.name)}</h2><span class="muted small">${esc(topic.category)} · ${approved.length} approved · ${pending.length} waiting for review</span></div>
+          <div class="btn-row">
+            <button class="btn secondary" data-action="quiz:buildOne" ${ui.building || ui.busy ? "disabled" : ""}>${buildingThis ? "Claude is writing…" : doc.questions.length ? `Write ${BUILD_COUNT} more` : `Write ${BUILD_COUNT} questions`}</button>
+            ${pending.length ? `<button class="btn" data-action="quiz:approveAll">Approve all ${pending.length}</button>` : ""}
+            <button class="icon-btn" data-action="quiz:closeReview" title="Close" aria-label="Close">×</button>
+          </div>
+        </div>
+        <p class="muted small">Claude writes questions only from this article in your Knowledge Library. Approve the ones that are right; only approved questions go into quizzes.</p>
+        ${changed ? `<p class="small warn-text">This article has changed since these questions were written. Check they still match.</p>` : ""}
+        ${buildingThis ? `<div class="muted small" role="status">Claude is reading the article and writing questions. This can take up to a minute.</div>` : ""}
+        ${pending.length ? `<h3>Waiting for review</h3><ul class="bank-list">${pending.map(item).join("")}</ul>` : ""}
+        ${approved.length ? `<details class="bank-approved" ${pending.length ? "" : "open"}><summary>Approved questions (${approved.length})</summary><ul class="bank-list">${approved.map(item).join("")}</ul></details>` : ""}
+        ${!doc.questions.length && !buildingThis ? `<div class="empty">No questions yet. Click “Write ${BUILD_COUNT} questions”.</div>` : ""}
       </div>`;
   }
 
@@ -532,13 +627,12 @@
   }
 
   function generateSection(ctx, cohort) {
-    const bank = ui.sheet.bank;
-    const reasons = blockers(ctx, cohort, bank);
+    const reasons = blockers(ctx, cohort);
     const ready = cohort ? cohort.trainees.filter((t) => slackStatus(ctx, t.email).ok).length : 0;
     const summary = cohort && (ui.weekly || ui.topics.size)
-      ? `${ui.weekly ? "Weekly Quiz" : plural(ui.topics.size, "topic")} · ${quizLength()} questions each from a pool of ${pool(bank).length} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
+      ? `${ui.weekly ? "Weekly Quiz" : plural(ui.topics.size, "topic")} · ${quizLength()} questions each from a pool of ${pool(ctx).length} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
       : "";
-    const canSample = bank && (ui.weekly || ui.topics.size) && lengthOk() && pool(bank).length >= quizLength();
+    const canSample = (ui.weekly || ui.topics.size) && lengthOk() && pool(ctx).length >= quizLength();
     return `
       <div class="card generate">
         <div class="min0">
@@ -652,34 +746,62 @@
       if (!ctx.data.perms.manageClasses) return TrainerHub.placeholder("Not available", "The Quiz Generator is for trainers who can manage classes.");
       if (ctx.data.mode === "local") return TrainerHub.placeholder("Open the shared dashboard", "The Quiz Generator works in the shared dashboard link, where it can reach Google Drive and Slack.");
       const cfg = ctx.data.quizConfig;
-      if (!cfg || !cfg.controlSheetId || editingConfig) return setupCard(ctx, editingConfig);
-      if (!autoLoaded) { autoLoaded = true; setTimeout(() => loadSheet(ctx), 0); }
+      if (!cfg || !cfg.knowledgeDocId || editingConfig) return setupCard(ctx, editingConfig);
+      if (!autoLoaded) { autoLoaded = true; setTimeout(() => loadKnowledge(ctx), 0); }
 
       const cohort = ctx.data.getCohort(ui.classId) || null;
       return `
-        ${sheetBar()}
+        ${knowledgeBar()}
         <div class="quiz-grid">
-          <div class="stack">${topicSection(ui.sheet.bank)}</div>
+          <div class="stack">${topicSection(ctx)}</div>
           <div class="stack">${classSection(ctx, cohort)}${settingsSection(cohort)}</div>
         </div>
+        ${reviewSection(ctx)}
         ${generateSection(ctx, cohort)}
         ${resultsSection(ctx, cohort)}`;
     },
 
     actions: {
       saveConfig(el, ctx) {
-        const controlSheetId = parseId(document.getElementById("quiz-sheet-id").value);
+        const knowledgeDocId = parseId(document.getElementById("quiz-doc-id").value);
         const exportFolderId = parseId(document.getElementById("quiz-folder-id").value);
-        if (!controlSheetId) { toast("Add the Control Sheet link."); return; }
-        ctx.data.saveQuizConfig({ controlSheetId, exportFolderId });
+        if (!knowledgeDocId) { toast("Add the Knowledge Library link."); return; }
+        ctx.data.saveQuizConfig({ knowledgeDocId, exportFolderId });
         editingConfig = false;
         autoLoaded = false;
-        ui.sheet = { status: "idle", bank: null, error: null, loadedAt: null };
+        ui.kb = { status: "idle", topics: null, title: "", error: null, loadedAt: null };
         ctx.rerender();
       },
       editConfig(el, ctx) { editingConfig = true; ctx.rerender(); },
       cancelConfig(el, ctx) { editingConfig = false; ctx.rerender(); },
-      reloadSheet(el, ctx) { loadSheet(ctx); },
+      reloadKnowledge(el, ctx) { loadKnowledge(ctx); },
+
+      review(el, ctx) { ui.reviewKey = ui.reviewKey === el.dataset.key ? null : el.dataset.key; ctx.rerender(); },
+      closeReview(el, ctx) { ui.reviewKey = null; ctx.rerender(); },
+      buildOne(el, ctx) {
+        const topic = topicByKey(ui.reviewKey);
+        if (!topic || ui.building || ui.busy) return;
+        buildQuestions(ctx, [topic]);
+      },
+      buildSelected(el, ctx) {
+        if (ui.building || ui.busy) return;
+        const list = ui.kb.topics.filter((t) => ui.topics.has(t.name) && approvedCount(ctx, t) < quizLength());
+        if (list.length) buildQuestions(ctx, list);
+      },
+      approve(el, ctx) { setStatus(ctx, ui.reviewKey, [el.dataset.id], "approved"); },
+      approveAll(el, ctx) {
+        const doc = ctx.data.quizBank[ui.reviewKey];
+        if (doc) setStatus(ctx, ui.reviewKey, doc.questions.filter((q) => q.status === "pending").map((q) => q.id), "approved");
+      },
+      removeQuestion(el, ctx) {
+        const id = el.dataset.id;
+        TrainerHub.confirmAction({
+          title: "Remove this question?",
+          message: "It's taken out of the question bank. Quizzes already sent keep their own copy.",
+          confirmLabel: "Remove",
+          onConfirm: () => setStatus(ctx, ui.reviewKey, [id], "removed"),
+        });
+      },
 
       topicSearch(el, ctx) { ui.topicQuery = el.value; ctx.rerender(); },
       toggleTopic(el, ctx) {
@@ -713,7 +835,7 @@
       preview(el, ctx) {
         const cohort = ctx.data.getCohort(ui.classId);
         let parts;
-        try { parts = E.formatQuiz({ className: cohort ? cohort.name : "Class", day: ui.day || 1, questions: E.buildQuiz(pool(ui.sheet.bank), quizLength()) }); }
+        try { parts = E.formatQuiz({ className: cohort ? cohort.name : "Class", day: ui.day || 1, questions: E.buildQuiz(pool(ctx), quizLength()) }); }
         catch (e) { toast(e.message); return; }
         TrainerHub.showDialog({
           title: "What a trainee receives",
@@ -735,7 +857,7 @@
 
       generate(el, ctx) {
         const cohort = ctx.data.getCohort(ui.classId);
-        if (ui.busy || blockers(ctx, cohort, ui.sheet.bank).length) return;
+        if (ui.busy || blockers(ctx, cohort).length) return;
         const ready = cohort.trainees.filter((t) => slackStatus(ctx, t.email).ok);
         const missing = cohort.trainees.length - ready.length;
         TrainerHub.confirmAction({

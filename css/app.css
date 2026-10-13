@@ -375,7 +375,7 @@ dialog::backdrop { background: rgba(5, 12, 40, 0.45); }
 .weekly.on { box-shadow: inset 0 0 0 2px var(--highlight); }
 .weekly:disabled { opacity: 0.6; cursor: not-allowed; background: var(--sunk); box-shadow: inset 0 0 0 1px var(--line); }
 .weekly:disabled strong { color: var(--muted); }
-.topic-list { display: grid; gap: 12px; max-height: 420px; overflow-y: auto; }
+.topic-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; max-height: 420px; overflow-y: auto; }
 .topic-cat { font: 500 11px var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
 .topic { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; font-size: 13.5px; }
 .topic:hover { background: var(--sunk); }
@@ -411,3 +411,21 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .topic.is-locked { opacity: 0.55; }
 .quiz-settings { display: grid; gap: 12px; }
 .slack-preview { white-space: pre-wrap; font: 13px/1.5 "Geist Mono", ui-monospace, monospace; background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0 0 10px; max-height: 50vh; overflow: auto; }
+.topic-row { display: flex; align-items: center; gap: 4px; border-radius: var(--r-sm); }
+.topic-row .topic { flex: 1; min-width: 0; }
+.topic-row.on { background: var(--primary-soft); }
+.topic-row .link-btn { flex: none; white-space: nowrap; }
+.build-hint { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--highlight-soft); }
+.btn.small { padding: 4px 10px; font-size: 12.5px; }
+.review { display: grid; gap: 12px; margin-bottom: 16px; }
+.review h3 { font-size: 13px; margin: 4px 0 0; }
+.bank-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.bank-q { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 12px; display: grid; gap: 6px; }
+.bank-q.pending { border-left: 3px solid var(--highlight); }
+.bank-q-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.bank-q-head strong { flex: 1 1 260px; font-size: 13.5px; }
+.bank-choices { margin: 0; padding-left: 22px; font-size: 13px; display: grid; gap: 2px; }
+.bank-choices .correct { color: var(--ok); font-weight: 600; }
+.bank-quote { border-left: 2px solid var(--line); padding-left: 8px; color: var(--muted); }
+.bank-approved summary { cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.topic-group { min-width: 0; }

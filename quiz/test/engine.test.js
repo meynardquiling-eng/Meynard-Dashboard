@@ -9,35 +9,113 @@ const test = (name, fn) => tests.push([name, fn]);
 // Deterministic random numbers so failures are reproducible.
 function seeded(seed) { return () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648); }
 
-function bankRows(perTopic) {
-  const rows = [];
+// Approved bank questions, in the shape bankQuestions() returns.
+function bank(perTopic) {
+  const out = [];
   let n = 0;
-  for (const [topic, cat, k] of perTopic)
+  for (const [topic, k] of perTopic)
     for (let i = 0; i < k; i++)
-      rows.push({ Topic: topic, Question: `${topic} q${i}`, "Choice A": "alpha", "Choice B": "bravo", "Choice C": "charlie", "Choice D": "delta", "Correct answer": "ABCD"[i % 4], "Question ID": "Q" + ++n, Category: cat, Active: "TRUE" });
-  return rows;
+      out.push({ id: "Q" + ++n, topic, question: `${topic} q${i}`, choices: { A: "alpha", B: "bravo", C: "charlie", D: "delta" }, correct: "ABCD"[i % 4] });
+  return out;
 }
 
-test("readBank keeps valid questions, skips invalid ones and counts per topic", () => {
-  const rows = bankRows([["Booking", "Core", 3], ["Policies", "Rules", 2]]);
-  rows.push({ Topic: "Policies", Question: "inactive", "Choice A": "a", "Choice B": "b", "Correct answer": "A", Active: "FALSE" });
-  rows.push({ Topic: "Empty", Question: "bad key", "Choice A": "a", "Choice B": "b", "Correct answer": "C", Category: "Rules" });
-  rows.push({ Topic: "", Question: "" }); // blank row ignored
-  const bank = E.readBank(rows);
-  assert.strictEqual(bank.questions.length, 5);
-  assert.strictEqual(bank.skipped, 2);
-  assert.deepStrictEqual(bank.topics.map((t) => [t.name, t.category, t.eligible]), [["Booking", "Core", 3], ["Empty", "Rules", 0], ["Policies", "Rules", 2]]);
-  assert.strictEqual(E.questionProblem({ Topic: "x", Question: "y", "Choice A": "a", "Choice B": "b", "Correct answer": "AB" }), "correct answer must be A, B, C or D");
+// A small library in the Google Docs connector's markdown shape (headings, a contents tab, tab labels).
+const LIBRARY = [
+  "# 📘 Table of Contents",
+  "**Care Library**",
+  "📘 **Table of Contents**",
+  "  - [Welcome](about:blank)",
+  "Care Foundation",
+  "  - [Zero Tolerance Policy](https://docs.google.com/x#a)",
+  "📅 **Bookings**",
+  "  - [Rescheduling](https://docs.google.com/x#b)",
+  "  - [No Claim](https://docs.google.com/x#c)",
+  "📖 [Glossary](https://docs.google.com/x#g)",
+  "# 🔴 Zero Tolerance Policy",
+  "",
+  "# **⚠️ Zero Tolerance Policy**",
+  "Agents must never share internal notes with customers. " + "Breaking this rule leads to a final warning. ".repeat(12),
+  "# Rescheduling",
+  "Customers can reschedule up to 24 hours before the appointment without a fee. See [the guide](https://docs.google.com/very/long/link). " + "More detail about rescheduling. ".repeat(15),
+  "# EXIT OFFERS",
+  "Exit offers are made only after a retention offer is declined. " + "Offer rules continue here. ".repeat(20),
+  "# Tab 9",
+  "# No Claim",
+  "When no cleaner claims a job, Care contacts the customer before the appointment. " + "No claim handling. ".repeat(25),
+  "# Handling Common Issues",
+  "short",
+  "# 📖 Glossary",
+  "MF: membership fee. ETF: early termination fee. " + "Glossary entries. ".repeat(25),
+].join("\n");
+
+test("splitKnowledgeBase: one topic per article, grouped by the contents, tab labels merged", () => {
+  const topics = E.splitKnowledgeBase(LIBRARY);
+  assert.deepStrictEqual(topics.map((t) => [t.name, t.category]), [
+    ["Zero Tolerance Policy", "Care Foundation"],
+    ["Rescheduling", "Bookings"],
+    ["Exit Offers", "Bookings"],           // not in the contents: stays with the article before it
+    ["No Claim", "Bookings"],              // "Tab 9" label merged into the next article
+    ["Glossary", "Glossary"],              // a contents heading that is itself an article
+  ]);
+  const z = topics[0];
+  assert.strictEqual(z.key, "zero-tolerance-policy");
+  assert.ok(z.text.includes("never share internal notes"));
+  assert.ok(!topics[1].text.includes("very/long/link"), "links are dropped from the article text");
+  assert.ok(!topics.some((t) => /table of contents|common issues/i.test(t.name)), "contents and near-empty sections are not topics");
+  assert.strictEqual(z.hash, E.splitKnowledgeBase(LIBRARY)[0].hash);
+  assert.notStrictEqual(z.hash, topics[1].hash);
+  assert.deepStrictEqual(E.splitKnowledgeBase(""), []);
+});
+
+test("questionPrompt: article only, count, format, and questions to avoid", () => {
+  const p = E.questionPrompt({ topic: "No Claim", text: "ARTICLE BODY", count: 15, avoid: ["Old question?"] });
+  assert.ok(p.includes("Use ONLY the knowledge base article below"));
+  assert.ok(p.includes("Write 15 questions"));
+  assert.ok(p.includes("<article>\nARTICLE BODY\n</article>"));
+  assert.ok(p.includes("* Old question?"));
+  assert.ok(p.includes('"correct":"B"'));
+  assert.ok(!E.questionPrompt({ topic: "x", text: "y", count: 5 }).includes("Don't repeat"));
+});
+
+test("checkGenerated: keeps well-formed questions, drops broken ones and duplicates, checks quotes", () => {
+  const article = "Customers can reschedule up to 24 hours before the appointment without a fee. Later changes cost $25.";
+  const ok = { question: "How late can a customer reschedule for free?", choices: { A: "1 hour", B: "24 hours", C: "48 hours", D: "Never" }, correct: "B", explanation: "The article says 24 hours.", quote: "Customers can reschedule up to 24 hours before the appointment without a fee." };
+  const reply = { questions: [
+    ok,
+    { ...ok, question: "What does a late change cost?", correct: "A", choices: { A: "$25", B: "$10", C: "$50", D: "Nothing" }, quote: "Late changes are expensive." },  // quote not in the article
+    { ...ok, question: "Three choices only?", choices: { A: "x", B: "y", C: "z" } },
+    { ...ok, question: "Correct letter missing", correct: "E" },
+    { ...ok, question: "Same choice twice", choices: { A: "x", B: "x", C: "y", D: "z" } },
+    { ...ok },                                                     // duplicate of the first
+    { ...ok, question: "Already in the bank?" },
+    null,
+  ] };
+  const r = E.checkGenerated(reply, article, { existing: ["already in the bank?"] });
+  assert.strictEqual(r.questions.length, 2);
+  assert.strictEqual(r.dropped, 6);
+  assert.deepStrictEqual(r.questions.map((q) => [q.quoteFound, q.status]), [[true, "pending"], [false, "pending"]]);
+  assert.notStrictEqual(r.questions[0].id, r.questions[1].id);
+  assert.strictEqual(E.checkGenerated([ok], article).questions.length, 1, "a bare array is accepted too");
+  assert.strictEqual(E.checkGenerated("nonsense", article).questions.length, 0);
+});
+
+test("bankQuestions: only approved questions, ids unique across topics", () => {
+  const q = (id, status) => ({ id, status, question: id, choices: { A: "a", B: "b", C: "c", D: "d" }, correct: "A" });
+  const out = E.bankQuestions([
+    { key: "rescheduling", topic: "Rescheduling", questions: [q("q1", "approved"), q("q2", "pending")] },
+    { key: "no-claim", topic: "No Claim", questions: [q("q1", "approved")] },
+  ]);
+  assert.deepStrictEqual(out.map((x) => [x.id, x.topic]), [["rescheduling:q1", "Rescheduling"], ["no-claim:q1", "No Claim"]]);
 });
 
 test("questionPool: weekly uses everything, otherwise only chosen topics", () => {
-  const bank = E.readBank(bankRows([["A", "c", 3], ["B", "c", 4], ["C", "c", 5]]));
-  assert.strictEqual(E.questionPool(bank.questions, { weekly: true, topics: [] }).length, 12);
-  assert.strictEqual(E.questionPool(bank.questions, { weekly: false, topics: ["A", "C"] }).length, 8);
+  const questions = bank([["A", 3], ["B", 4], ["C", 5]]);
+  assert.strictEqual(E.questionPool(questions, { weekly: true, topics: [] }).length, 12);
+  assert.strictEqual(E.questionPool(questions, { weekly: false, topics: ["A", "C"] }).length, 8);
 });
 
 test("buildQuiz: right length, no repeats, choice order is a permutation, differs per trainee", () => {
-  const pool = E.readBank(bankRows([["A", "c", 30]])).questions;
+  const pool = bank([["A", 30]]);
   const rand = seeded(7);
   const quizzes = Array.from({ length: 8 }, () => E.buildQuiz(pool, 15, rand));
   for (const q of quizzes) {
@@ -52,7 +130,7 @@ test("buildQuiz: right length, no repeats, choice order is a permutation, differ
 });
 
 test("buildQuiz: weekly 50 works with 50+, refuses a pool that's too small", () => {
-  const pool = E.readBank(bankRows([["A", "c", 59]])).questions;
+  const pool = bank([["A", 59]]);
   const q = E.buildQuiz(pool, 50, seeded(3));
   assert.strictEqual(q.length, 50);
   assert.strictEqual(new Set(q.map((x) => x.id)).size, 50);
@@ -60,7 +138,7 @@ test("buildQuiz: weekly 50 works with 50+, refuses a pool that's too small", () 
 });
 
 test("formatQuiz: shows questions and display letters, never the answer or a score", () => {
-  const pool = E.readBank(bankRows([["A", "c", 20]])).questions;
+  const pool = bank([["A", 20]]);
   const quiz = E.buildQuiz(pool, 10, seeded(11));
   const msgs = E.formatQuiz({ className: "Care Wave 15", day: 6, questions: quiz });
   const all = msgs.join("\n");
@@ -75,8 +153,8 @@ test("formatQuiz: shows questions and display letters, never the answer or a sco
 });
 
 test("formatQuiz: long quizzes split between questions, each part under the limit", () => {
-  const rows = bankRows([["A", "c", 60]]).map((r) => ({ ...r, Question: r.Question + " " + "long text ".repeat(25) }));
-  const quiz = E.buildQuiz(E.readBank(rows).questions, 50, seeded(5));
+  const rows = bank([["A", 60]]).map((r) => ({ ...r, question: r.question + " " + "long text ".repeat(25) }));
+  const quiz = E.buildQuiz(rows, 50, seeded(5));
   const msgs = E.formatQuiz({ className: "C", day: 1, questions: quiz });
   assert.ok(msgs.length > 1);
   for (const m of msgs) assert.ok(m.length <= 3800 + 120, "part too long: " + m.length);

@@ -21,7 +21,8 @@
     // Who is viewing. manageClasses = may run the Quiz Generator (editors and the owner of the shared dashboard).
     perms: { manageClasses: false, userId: null },
     // Quiz Generator, editors only (db rules make these unreadable to anyone else):
-    quizConfig: null,      // quiz/config     { controlSheetId, exportFolderId } — not secrets
+    quizConfig: null,      // quiz/config     { knowledgeDocId, exportFolderId } — not secrets
+    quizBank: {},          // quizBank/<topicKey>  Claude-written questions for one Knowledge Library topic, with review status
     slackDirectory: {},    // quiz/directory  { "<email>": { userId, status: "found"|"not-found"|"error", error, checkedAt } }
     quizGenerations: [],   // quizGenerations/<genId>  one per Generate click: class, day, topics, length (never overwritten)
     quizzes: {},           // quizzes/<genId>_<traineeId>  questions + answer key, delivery, submission, result
@@ -35,6 +36,7 @@
   let db = null;
   let assets = null;
   let mcp = null;
+  let sample = null;
   let browserCopyHidden = false;
 
   /* ---------- Saving ---------- */
@@ -134,6 +136,10 @@
       // Readable only by editors (see the db rules declared when the dashboard is published).
       db.doc("quiz/config").onSnapshot((snap) => {
         state.quizConfig = snap.exists ? clone(snap.data()) : null;
+        notify();
+      }, onError);
+      db.collection("quizBank").onSnapshot((snap) => {
+        state.quizBank = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
         notify();
       }, onError);
       db.doc("quiz/directory").onSnapshot((snap) => {
@@ -283,6 +289,21 @@
       state.quizConfig = { ...cfg, updatedAt: new Date().toISOString() };
       if (db) return write("quiz/config", () => db.doc("quiz/config").set(clone(state.quizConfig)));
       store.set("quizConfig", state.quizConfig);
+    },
+    get quizBank() { return state.quizBank; },
+    saveBankTopic(doc) {
+      state.quizBank[doc.key] = doc;
+      notify();
+      if (db) return write("quizBank/" + doc.key, () => db.doc("quizBank/" + doc.key).set(clone(doc)));
+    },
+    /**
+     * Asks Claude (on the viewer's own Claude account) and returns the reply parsed as JSON.
+     * Rejects with { code, message } (codes from the claude.ai sample runtime, plus "no_claude").
+     */
+    async askClaudeJson(prompt, options) {
+      if (!sample) { try { sample = window.claude ? await window.claude.use("sample") : null; } catch { sample = null; } }
+      if (!sample) throw { code: "no_claude", message: "Asking Claude is only available in the shared dashboard." };
+      return sample.json(prompt, options);
     },
     get slackDirectory() { return state.slackDirectory; },
     // entries: { "<email>": { userId, status, error, checkedAt } } merged into the directory.
