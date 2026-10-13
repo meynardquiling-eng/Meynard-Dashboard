@@ -291,16 +291,29 @@
 
   /* ---------------- Reading the Slack connector's text results ---------------- */
 
-  const textOf = (result) => {
+  /**
+   * All the text in a connector result, however it's wrapped: `payload` (parsed JSON, structured content
+   * or plain text), and the raw text blocks, which may themselves be JSON with the text inside.
+   */
+  function textOf(result) {
     if (result == null) return "";
     if (typeof result === "string") return result;
     const parts = [];
-    const p = result.payload;
-    if (typeof p === "string") parts.push(p);
-    else if (p && typeof p === "object") parts.push(...Object.values(p).filter((v) => typeof v === "string"), JSON.stringify(p));
-    for (const b of result.content || []) if (b && typeof b.text === "string") parts.push(b.text);
+    const walk = (v, depth) => {
+      if (v == null || depth > 6) return;
+      if (typeof v === "string") {
+        const t = v.trim();
+        if ((t.startsWith("{") || t.startsWith("[")) && depth < 6) { try { walk(JSON.parse(t), depth + 1); return; } catch { /* not JSON */ } }
+        parts.push(v);
+      } else if (Array.isArray(v)) v.forEach((x) => walk(x, depth + 1));
+      else if (typeof v === "object") Object.values(v).forEach((x) => walk(x, depth + 1));
+    };
+    walk(result.payload, 0);
+    walk(result.structuredContent, 0);
+    for (const b of result.content || []) if (b && typeof b.text === "string") walk(b.text, 0);
+    if (result.payload && typeof result.payload === "object") parts.push(JSON.stringify(result.payload)); // keeps field names for parseSendResult
     return parts.join("\n");
-  };
+  }
 
   /** From slack_search_users (concise) text: the user id whose listed email exactly matches. */
   function findUserIdByEmail(text, email) {
@@ -324,6 +337,7 @@
     const clean = (t) => t.replace(/\s*(Reactions?:|Thread:)[\s\S]*$/, "").trim();
     const channel = /=== Message from (.*?) (?:<([^>]*)> )?\((U[A-Z0-9]+|B[A-Z0-9]+)\) at ([^=]*?) ===\s*\n?Message TS: (\d+\.\d+)\s*\n?([\s\S]*?)(?=\n?=== Message from |$)/g;
     for (const m of String(text).matchAll(channel)) {
+      if (out.some((x) => x.ts === m[5])) continue;
       out.push({ name: m[1].trim(), email: (m[2] || "").trim(), userId: m[3], at: m[4].trim(), ts: m[5], text: clean(m[6]) });
     }
     const thread = /(?:^|\n)From: (.*?) (?:<([^>]*)> )?\((U[A-Z0-9]+|B[A-Z0-9]+)\)\s*\nTime: ([^\n]*)\nMessage TS: (\d+\.\d+)\s*\n?([\s\S]*?)(?=\n+(?:--- Reply \d+ of \d+ ---|=== THREAD [A-Z ]+ ===)|$)/g;

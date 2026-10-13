@@ -133,7 +133,7 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 
 | Part | Tested with | Result |
 | --- | --- | --- |
-| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 17/17 pass. Breaking the quote check or the tab-label merge makes a test fail |
+| Quiz logic (`quiz-engine.js`) | `node quiz/test/engine.test.js` | 18/18 pass. Breaking the quote check or the tab-label merge makes a test fail |
 | Quiz tab | Browser (Playwright) with a mocked database and viewer permissions, a Drive connector serving the real Knowledge Library text, and mocked Claude and Slack | All flows above pass, no console errors, no sideways scroll on a phone |
 | Google Drive read | **Real**: the Knowledge Library was read once through the connector | Result shape `{fileContent, title, viewUrl}` confirmed |
 | Claude question writing | **Mocked.** The real quality is only seen when you build your first topic | Review every question before approving |

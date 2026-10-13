@@ -74,7 +74,7 @@
   }
   // A send that failed this way may still have gone out.
   const ambiguous = (e) => e && (e.code === "server_unavailable" || e.code === "upstream_error");
-  const FATAL = ["server_not_connected", "needs_reauth", "not_in_manifest", "blocked_by_policy", "no_connector"];
+  const FATAL = ["server_not_connected", "needs_reauth", "not_in_manifest", "blocked_by_policy", "selection_required", "no_connector"];
 
   /* ---------------------------------------------------------------- reading the Knowledge Library */
 
@@ -347,7 +347,7 @@
           for (const m of E.parseMessages(E.textOf(thread))) if (!messages.some((x) => x.ts === m.ts)) messages.push(m);
         }
         const sub = E.firstSubmission(messages, q.slackUserId, after, q.questions.length);
-        const next = { ...q, refreshError: null, refreshedAt: new Date().toISOString() };
+        const next = { ...q, refreshError: null, refreshedAt: new Date().toISOString(), messagesRead: messages.length };
         if (sub) {
           // The first reply is final: graded once, never replaced.
           next.submission = { at: new Date(Number(sub.ts) * 1000).toISOString(), ts: sub.ts, text: sub.text, answers: sub.answers };
@@ -368,10 +368,17 @@
   }
   const readErrors = (n) => (n ? `; couldn't read ${n} DM${n > 1 ? "s" : ""}` : "");
 
+  // The outcome of the last check stays on screen (and in the database) instead of only a passing toast.
+  async function recordCheck(ctx, gen, message, error) {
+    const latest = ctx.data.quizGenerations.find((g) => g.id === gen.id) || gen;
+    await ctx.data.saveQuizGeneration({ ...latest, lastCheck: { at: new Date().toISOString(), message, error: !!error } });
+    finish(ctx, message);
+  }
+
   async function refreshResults(ctx, gen) {
     ui.busy = "refresh";
     const r = await collectReplies(ctx, gen);
-    finish(ctx, r.fatal || `${plural(r.graded, "new submission")} graded${readErrors(r.errors)}.`);
+    await recordCheck(ctx, gen, r.fatal || `${plural(r.graded, "new submission")} graded${readErrors(r.errors)}. Nothing was sent.`, r.fatal);
   }
 
   // "Check answers": read and grade new replies, then DM each trainee who has answered their score and the
@@ -379,7 +386,7 @@
   async function checkAnswers(ctx, gen) {
     ui.busy = "check-answers";
     const r = await collectReplies(ctx, gen);
-    if (r.fatal) return finish(ctx, r.fatal);
+    if (r.fatal) return recordCheck(ctx, gen, r.fatal, true);
     const ready = ctx.data.quizzesFor(gen.id).filter((q) => q.result && !(q.resultsSent && q.resultsSent.at) && q.slackUserId);
     ui.busy = "send-results"; ui.progress = { done: 0, total: ready.length };
     ctx.rerender();
@@ -394,7 +401,7 @@
         } catch (e) {
           console.warn("quiz: send results", e && e.code);
           error = slackError(e) + (ambiguous(e) ? " It may still have been sent: check your DM before sending again." : "");
-          if (e && FATAL.includes(e.code)) { await ctx.data.saveQuiz({ ...q, resultsError: error }); return finish(ctx, error); }
+          if (e && FATAL.includes(e.code)) { await ctx.data.saveQuiz({ ...q, resultsError: error }); return recordCheck(ctx, gen, error, true); }
           break;
         }
       }
@@ -403,7 +410,7 @@
       step(ctx);
     }
     const waiting = ctx.data.quizzesFor(gen.id).filter((q) => q.delivery && q.delivery.status === "delivered" && !q.submission).length;
-    finish(ctx, `${plural(r.graded, "new submission")} graded. Results sent to ${plural(sent, "trainee")}${failed ? `; ${failed} failed` : ""}${waiting ? `; ${waiting} still haven't answered` : ""}${readErrors(r.errors)}.`);
+    await recordCheck(ctx, gen, `${plural(r.graded, "new submission")} graded. Results sent to ${plural(sent, "trainee")}${failed ? `; ${failed} failed` : ""}${waiting ? `; ${waiting} still haven't answered` : ""}${readErrors(r.errors)}.`, failed > 0 || r.errors > 0);
   }
 
   async function retryFailed(ctx, gen, cohort) {
@@ -755,7 +762,7 @@
         <td><strong>${esc(q.name)}</strong></td>
         <td class="small">${esc(q.email)}${q.slackUserId ? `<br><span class="muted">${esc(q.slackUserId)}</span>` : ""}</td>
         <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}${q.resultsError && !(q.resultsSent && q.resultsSent.at) ? `<br><span class="small danger-text">Results not sent: ${esc(q.resultsError)}</span>` : ""}</td>
-        <td><span class="pill ${st.kind}">${esc(st.label)}</span>${q.submission && answered < q.questions.length ? `<br><span class="small muted">Answered ${answered} of ${q.questions.length}</span>` : ""}</td>
+        <td><span class="pill ${st.kind}">${esc(st.label)}</span>${!q.submission && q.refreshedAt ? `<br><span class="small muted">No answer found yet (checked ${esc(fmtAt(q.refreshedAt))})</span>` : ""}${q.submission && answered < q.questions.length ? `<br><span class="small muted">Answered ${answered} of ${q.questions.length}</span>` : ""}</td>
         <td class="small">${q.submission ? esc(fmtAt(q.submission.at)) : ""}</td>
         <td class="num"><strong>${q.result ? esc(q.result.pct) + "%" : "—"}</strong></td>
         <td>${q.result ? `<button class="link-btn" data-action="quiz:viewAnswers" data-gen="${esc(gen.id)}" data-trainee="${esc(q.traineeId)}">View answers</button>` : ""}</td>
@@ -783,7 +790,7 @@
         ${gen.test ? `<p class="small"><span class="pill warn">Test</span> Sent only to you. Trainees didn't get this one, and it's left out of exports.</p>` : ""}
         <div class="muted small">Generated ${esc(fmtAt(gen.createdAt))} · ${esc(gen.topics.join(", "))} · ${esc(gen.length)} questions · ID ${esc(gen.id)}</div>
         ${stalled ? `<p class="small danger-text">Sending stopped before it finished (the page was closed?). Rows still “Sending” were not sent; check your DMs, then use ✉ to resend failed ones.</p>` : ""}
-        ${busyLabel ? `<div class="muted small" role="status">${busyLabel}${progressText()}</div>` : ""}
+        ${busyLabel ? `<div class="muted small" role="status">${busyLabel}${progressText()}</div>` : gen.lastCheck ? `<div class="small ${gen.lastCheck.error ? "danger-text" : "muted"}" role="status">Last checked ${esc(fmtAt(gen.lastCheck.at))}: ${esc(gen.lastCheck.message)}</div>` : ""}
         ${link ? `<div class="small">Exported: ${link === "created" ? "a new spreadsheet is in your Google Drive." : `<a href="${esc(link)}" target="_blank" rel="noopener">Open spreadsheet</a>`}</div>` : ""}
         ${countChips(counts(quizzes))}
         <div class="table-wrap"><table class="table quiz-roster">
@@ -953,7 +960,7 @@
           onConfirm() {
             if (ui.busy) return;
             ui.busy = "check-answers";
-            checkAnswers(ctx, gen).catch((e) => { console.warn("quiz: check answers", e); finish(ctx, "Couldn't finish checking answers. Try again."); });
+            checkAnswers(ctx, gen).catch((e) => { console.warn("quiz: check answers", e); recordCheck(ctx, gen, "Couldn't finish checking answers: " + ((e && e.message) || "unknown error") + ". Try again.", true); });
           },
         });
       },

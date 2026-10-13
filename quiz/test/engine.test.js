@@ -250,6 +250,20 @@ test("parseMessages: the thread layout, and a self-test's quiz parts are not ans
   assert.strictEqual(both.length, 7);
 });
 
+test("textOf: reads results however the page receives them", () => {
+  // payload parsed from JSON text (what read_channel returns), the raw JSON text block, structured content.
+  const asPayload = { payload: { messages: THREAD, pagination_info: "none" } };
+  const asTextBlock = { content: [{ type: "text", text: JSON.stringify({ messages: THREAD }) }] };
+  const asStructured = { structuredContent: { messages: [THREAD] }, content: [] };
+  for (const r of [asPayload, asTextBlock, asStructured, THREAD]) {
+    const sub = E.firstSubmission(E.parseMessages(E.textOf(r)), "U08D4U44SF2", "1791893925.185499", 3);
+    assert.ok(sub, "reply found");
+    assert.deepStrictEqual(sub.answers, ["B", "D", "A"]);
+  }
+  assert.strictEqual(E.parseMessages(E.textOf(asPayload)).length, 3, "no duplicates");
+  assert.deepStrictEqual(E.parseSendResult(E.textOf({ payload: { ok: true, channel: "D08CD94H27P", ts: "1791893925.185499" } })), { ts: "1791893925.185499", channel: "D08CD94H27P" });
+});
+
 test("parseProfileId: reads the id from the real profile format", () => {
   assert.strictEqual(E.parseProfileId(E.textOf({ payload: "User ID: U08D4U44SF2\nUsername: meynardquiling\n" })), "U08D4U44SF2");
   assert.strictEqual(E.parseProfileId("Username: x"), null);
