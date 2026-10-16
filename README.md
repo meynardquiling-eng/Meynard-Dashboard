@@ -8,7 +8,7 @@ A dashboard for trainers. A rail on the left switches between tools.
 | Attendance Checker | Daily Slack check-in. At 6:55 AM Central a Goodmorning message is posted in each running cohort's channel; at 7:05 repliers are ticked, at 9:00 late repliers are ticked and the rest flagged Possible NCNS. Each day is a tick box you can change, with penalty points and a comment. One tile per cohort with a 4-week grid and point totals. See [ATTENDANCE.md](ATTENDANCE.md). |
 | Quiz Generator | Trainers only (hidden from viewers who can't edit). Claude writes questions from the Knowledge Library (Google Doc) for you to approve. Pick topics or the Weekly Quiz and a class; each trainee gets a private, randomized quiz as a DM from your own Slack account and answers in one reply. Graded in the dashboard; scores and answers visible to trainers only. See [QUIZ.md](QUIZ.md). |
 | Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
-| Zoom Tracker | One tile per cohort; tracking comes later. |
+| Zoom Tracker | One tile per cohort. Upload Zoom's participant report (CSV) after class to see, per trainee per day, when they tried to enter (waiting room), were admitted and left, their time in Zoom and how many times they dropped. Unknown Zoom names are assigned once and remembered. Export a day to Google Sheets. Logic in `js/zoom-engine.js`, tests in `zoom/test/`. |
 
 ## Where your data is saved
 
@@ -35,6 +35,7 @@ js/schedule.js        attendance schedule: Central time, 20 training days, cutof
 js/data.js            all reads and writes (cohorts, trainees, materials, files)
 js/tools/*.js         one file per tool
 quiz/test/            quiz logic tests (js/quiz-engine.js holds the quiz logic)
+zoom/test/            Zoom report reading and time tests (js/zoom-engine.js)
 js/app.js             rail, routing (#toolId) and action dispatch
 ```
 

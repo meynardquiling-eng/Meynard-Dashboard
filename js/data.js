@@ -18,6 +18,8 @@
     cohorts: [],
     materials: [],
     attendance: {}, // "<cohortId>_<date>" -> attendance document
+    zoomDays: {},    // zoom/<cohortId>_<date>  Zoom participant sessions uploaded for that cohort and day
+    zoomAliases: {}, // zoomAliases/<cohortId>   { "<email:…|name:…>": traineeId | "ignore" } set by the trainer
     // Who is viewing. manageClasses = may run the Quiz Generator (editors and the owner of the shared dashboard).
     perms: { manageClasses: false, userId: null },
     // Quiz Generator, editors only (db rules make these unreadable to anyone else):
@@ -57,7 +59,8 @@
 
   let warned = false;
   function saveLocal() {
-    const ok = store.set("cohorts", state.cohorts) && store.set("materials", state.materials) && store.set("attendance", state.attendance);
+    const ok = store.set("cohorts", state.cohorts) && store.set("materials", state.materials) && store.set("attendance", state.attendance)
+      && store.set("zoomDays", state.zoomDays) && store.set("zoomAliases", state.zoomAliases);
     if (!ok && !warned) {
       warned = true;
       toast("This browser isn't letting the app save. Changes will be lost when you close the page.");
@@ -90,6 +93,8 @@
     state.cohorts = store.get("cohorts", []);
     state.materials = store.get("materials", []);
     state.attendance = store.get("attendance", {});
+    state.zoomDays = store.get("zoomDays", {});
+    state.zoomAliases = store.get("zoomAliases", {});
     state.quizConfig = store.get("quizConfig", null);
     notify();
   }
@@ -130,6 +135,14 @@
     }, onError);
     db.collection("attendance").onSnapshot((snap) => {
       state.attendance = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
+      notify();
+    }, onError);
+    db.collection("zoom").onSnapshot((snap) => {
+      state.zoomDays = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
+      notify();
+    }, onError);
+    db.collection("zoomAliases").onSnapshot((snap) => {
+      state.zoomAliases = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data()).map || {}]));
       notify();
     }, onError);
     if (state.perms.manageClasses) {
@@ -222,6 +235,11 @@
         delete state.attendance[key];
         if (db) removeDoc("attendance/" + key);
       }
+      for (const key of Object.keys(state.zoomDays).filter((k) => state.zoomDays[k].cohortId === id)) {
+        delete state.zoomDays[key];
+        if (db) removeDoc("zoom/" + key);
+      }
+      if (state.zoomAliases[id]) { delete state.zoomAliases[id]; if (db) removeDoc("zoomAliases/" + id); }
       removeDoc("cohorts/" + id);
     },
 
@@ -339,6 +357,41 @@
     },
     drive(tool, input) { return this.connector("Google Drive", tool, input); },
     slack(tool, input) { return this.connector("Slack", tool, input); },
+
+    /* ----- Zoom monitoring ----- */
+    /*
+      zoom/<cohortId>_<date>: { cohortId, date, hasWaitingColumn, sessions: [{ name, email, join, leave, waiting }],
+                                uploads: [{ fileName, topic, meetingId, uploadedAt, rows }] }
+      Times are wall-clock strings exactly as the Zoom report shows them.
+    */
+    getZoomDay(cohortId, date) { return state.zoomDays[`${cohortId}_${date}`]; },
+    zoomDatesFor(cohortId) {
+      return Object.values(state.zoomDays).filter((d) => d.cohortId === cohortId).map((d) => d.date).sort();
+    },
+    saveZoomDay(doc) {
+      const key = `${doc.cohortId}_${doc.date}`;
+      state.zoomDays[key] = doc;
+      notify();
+      if (db) return write("zoom/" + key, () => db.doc("zoom/" + key).set(clone(doc)));
+      store.set("zoomDays", state.zoomDays);
+    },
+    deleteZoomDay(cohortId, date) {
+      const key = `${cohortId}_${date}`;
+      delete state.zoomDays[key];
+      notify();
+      if (db) return removeDoc("zoom/" + key);
+      store.set("zoomDays", state.zoomDays);
+    },
+    zoomAliases(cohortId) { return state.zoomAliases[cohortId] || {}; },
+    // Remembers which trainee a Zoom name or email belongs to ("ignore" for the trainer, guests, etc.).
+    setZoomAlias(cohortId, key, traineeId) {
+      const map = { ...(state.zoomAliases[cohortId] || {}) };
+      if (traineeId) map[key] = traineeId; else delete map[key];
+      state.zoomAliases[cohortId] = map;
+      notify();
+      if (db) return write("zoomAliases/" + cohortId, () => db.doc("zoomAliases/" + cohortId).set({ map: clone(map) }));
+      store.set("zoomAliases", state.zoomAliases);
+    },
 
     /* ----- Courseware materials ----- */
     get materials() { return state.materials; },
