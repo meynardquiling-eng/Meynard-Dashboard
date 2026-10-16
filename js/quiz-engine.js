@@ -178,8 +178,8 @@
     return out;
   }
 
-  function questionPool(questions, { weekly, topics }) {
-    if (weekly) return questions.slice();
+  /** The questions from the chosen topics. The Weekly Quiz uses the topics the trainer ticks, like any quiz. */
+  function questionPool(questions, { topics }) {
     const wanted = new Set(topics);
     return questions.filter((q) => wanted.has(q.topic));
   }

@@ -189,7 +189,7 @@
     const out = [];
     if (!ctx.data.perms.manageClasses) out.push("You need permission to manage classes.");
     if (!ui.kb.topics) out.push("Load the Knowledge Library.");
-    if (!ui.weekly && !ui.topics.size) out.push("Pick at least one topic, or the Weekly Quiz.");
+    if (!ui.topics.size) out.push(ui.weekly ? "Tick the topics to include in the Weekly Quiz." : "Pick at least one topic, or the Weekly Quiz.");
     if (!cohort) out.push("Pick a class.");
     if (cohort) {
       const d = dayInfo(cohort);
@@ -198,7 +198,7 @@
       if (!cohort.trainees.some((t) => slackStatus(ctx, t.email).ok)) out.push("No trainee has a matched Slack account yet. Use “Check Slack accounts”.");
     }
     if (!lengthOk()) out.push(`Quiz length must be ${REGULAR.min}–${REGULAR.max}.`);
-    if ((ui.weekly || ui.topics.size) && pool(ctx).length < quizLength()) out.push(`Only ${pool(ctx).length} approved questions in your selection; ${quizLength()} needed. Build and approve more questions (see the topic's Review).`);
+    if (ui.topics.size && pool(ctx).length < quizLength()) out.push(`Only ${pool(ctx).length} approved questions in your selected topics; ${quizLength()} needed. ${ui.weekly ? "Tick more topics, or b" : "B"}uild and approve more questions (see the topic's Review).`);
     if (ui.busy) out.push("Wait for the current Slack action to finish.");
     return out;
   }
@@ -297,7 +297,7 @@
     const length = quizLength();
     const gen = {
       id: newId(), classId: cohort.id, className: cohort.name, day: ui.day,
-      mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic] : [...ui.topics],
+      mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic + ": " + [...ui.topics].join(", ")] : [...ui.topics],
       length, poolSize: questionPool.length, createdAt: new Date().toISOString(), createdBy: ctx.data.perms.userId, status: "sending",
     };
     ui.lastSubmit = { genId: gen.id, day: gen.day };
@@ -473,7 +473,7 @@
       const questionPool = pool(ctx);
       const gen = {
         id: newId(), test: true, classId: cohort.id, className: cohort.name + " (TEST)", day: ui.day || 1,
-        mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic] : [...ui.topics],
+        mode: ui.weekly ? "weekly" : "regular", topics: ui.weekly ? [WEEKLY.topic + ": " + [...ui.topics].join(", ")] : [...ui.topics],
         length: quizLength(), poolSize: questionPool.length, createdAt: new Date().toISOString(), createdBy: ctx.data.perms.userId, status: "sending",
       };
       const quiz = {
@@ -565,7 +565,7 @@
           const id = "topic-" + t.key;
           const ready = approvedCount(ctx, t), waiting = pendingCount(ctx, t);
           return `<div class="topic-row ${ui.reviewKey === t.key ? "on" : ""}">
-            <label class="topic ${ui.weekly ? "is-locked" : ""}" for="${id}">
+            <label class="topic" for="${id}">
               <input type="checkbox" id="${id}" data-action-change="quiz:toggleTopic" data-topic="${esc(t.name)}" ${ui.topics.has(t.name) ? "checked" : ""}>
               <span class="min0 ellipsis">${esc(t.name)}</span><span class="count" title="Approved questions">${ready}</span></label>
             <button class="link-btn small" data-action="quiz:review" data-key="${t.key}">${waiting ? `Review ${waiting}` : ready ? "Questions" : "Build"}</button>
@@ -574,12 +574,14 @@
       </div>`).join("");
     return `
       <div class="card">
-        <div class="card-head"><h2>Topics</h2><span class="muted small">${ui.weekly ? "Weekly Quiz selected" : `${ui.topics.size} selected`}${ui.topics.size ? ` · <button class="link-btn" data-action="quiz:clearTopics">Clear all</button>` : ""}</span></div>
+        <div class="card-head"><h2>Topics</h2><span class="muted small">${ui.topics.size} selected${ui.weekly ? " for the Weekly Quiz" : ""}${ui.weekly ? ` · <button class="link-btn" data-action="quiz:selectAll">Select all with questions</button>` : ""}${ui.topics.size ? ` · <button class="link-btn" data-action="quiz:clearTopics">Clear all</button>` : ""}</span></div>
         <button class="weekly ${ui.weekly ? "on" : ""}" data-action="quiz:toggleWeekly" ${weeklyOk ? "" : "disabled"} aria-pressed="${ui.weekly}">
           <strong>Weekly Quiz</strong>
-          <span>${weeklyOk ? `Exactly ${WEEKLY.length} questions drawn from all ${total} approved questions.` : `Needs ${WEEKLY.length} approved questions; the bank has ${total}. Build and approve questions for more topics to use it.`}</span>
+          <span>${!weeklyOk ? `Needs ${WEEKLY.length} approved questions; the bank has ${total}. Build and approve questions for more topics to use it.`
+            : ui.weekly ? `On. Exactly ${WEEKLY.length} questions drawn from the ${pool(ctx).length} approved questions in the topics you tick below. Click to turn off.`
+            : `Off. Turn on for a ${WEEKLY.length}-question quiz from topics you pick.`}</span>
         </button>
-        ${ui.weekly ? `<p class="muted small">Weekly Quiz uses every topic, so individual topics are locked. Pick a topic to switch back to a regular quiz.</p>` : ""}
+
         ${short.length && !ui.weekly ? `<div class="build-hint"><span class="small">${plural(short.length, "selected topic")} ${short.length === 1 ? "has" : "have"} fewer than ${quizLength()} approved questions.</span>
           <button class="btn secondary" data-action="quiz:buildSelected" ${ui.building || ui.busy ? "disabled" : ""}>${ui.building ? `Writing questions ${ui.building.done + 1} of ${ui.building.keys.length}…` : `Have Claude write questions`}</button></div>` : ""}
         <input class="search" id="quiz-topic-search" type="search" placeholder="Search topics" value="${esc(ui.topicQuery)}" data-action-input="quiz:topicSearch" aria-label="Search topics">
@@ -692,10 +694,10 @@
   function generateSection(ctx, cohort) {
     const reasons = blockers(ctx, cohort);
     const ready = cohort ? cohort.trainees.filter((t) => slackStatus(ctx, t.email).ok).length : 0;
-    const summary = cohort && (ui.weekly || ui.topics.size)
-      ? `${ui.weekly ? "Weekly Quiz" : plural(ui.topics.size, "topic")} · ${quizLength()} questions each from a pool of ${pool(ctx).length} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
+    const summary = cohort && ui.topics.size
+      ? `${ui.weekly ? `Weekly Quiz from ${plural(ui.topics.size, "topic")}` : plural(ui.topics.size, "topic")} · ${quizLength()} questions each from a pool of ${pool(ctx).length} · ${plural(ready, "trainee")} in ${esc(cohort.name)}${ui.day ? ` · Day ${ui.day}` : ""}`
       : "";
-    const canSample = (ui.weekly || ui.topics.size) && lengthOk() && pool(ctx).length >= quizLength();
+    const canSample = ui.topics.size && lengthOk() && pool(ctx).length >= quizLength();
     return `
       <div class="card generate">
         <div class="min0">
@@ -878,13 +880,16 @@
       topicSearch(el, ctx) { ui.topicQuery = el.value; ctx.rerender(); },
       toggleTopic(el, ctx) {
         const name = el.dataset.topic;
-        if (el.checked) { ui.topics.add(name); ui.weekly = false; } else ui.topics.delete(name);
+        if (el.checked) ui.topics.add(name); else ui.topics.delete(name);
+        ctx.rerender();
+      },
+      selectAll(el, ctx) {
+        for (const t of ui.kb.topics || []) if (approvedCount(ctx, t)) ui.topics.add(t.name);
         ctx.rerender();
       },
       clearTopics(el, ctx) { ui.topics.clear(); ctx.rerender(); },
       toggleWeekly(el, ctx) {
-        ui.weekly = !ui.weekly;
-        if (ui.weekly) ui.topics.clear(); // Weekly Quiz replaces and locks the topic list
+        ui.weekly = !ui.weekly; // the ticked topics stay; they become the Weekly Quiz's topics
         ctx.rerender();
       },
 

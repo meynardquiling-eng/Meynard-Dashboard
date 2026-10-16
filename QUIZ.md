@@ -51,7 +51,7 @@ Trainees and anyone without edit access can't open these records; the database r
 
 1. **Build the question bank.** Click **Build** next to a topic (or tick topics and click **Have Claude write questions**). Claude reads that article only and writes 15 questions. Each shows the correct answer, a one-line explanation and the sentence from the article that proves it. If Claude's quoted sentence isn't found in the article, the question is marked “check this one”.
 2. **Review.** Approve the right ones (or **Approve all**), remove the rest. Only approved questions are used. **Write 15 more** adds new questions without repeating existing ones. The number next to each topic is its approved questions.
-3. **Pick topics** (or the Weekly Quiz, once 50 questions are approved) and **a class**.
+3. **Pick topics** and **a class**. For the **Weekly Quiz**, turn it on and tick the topics it should cover ("Select all with questions" ticks every topic that has approved questions). It needs at least 50 approved questions across the ticked topics. Turning it off keeps your ticked topics for a regular quiz.
 4. **Check Slack accounts.** Looks up each trainee's work email in Slack. Only an exact email match counts. Nothing is sent.
 5. Check the **training day** (today, or pick one) and the **number of questions** (10–20, default 15; Weekly is always 50).
 6. **Preview message** shows a sample of what a trainee receives. Nothing is sent.
@@ -80,7 +80,7 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 - Each heading-1 article is a topic. A short tab label right before an article merges into it and the article's full title is used.
 - Categories come from the doc's own Table of Contents. An article the contents don't list stays with the article before it.
 - Sections with almost no text, and the Table of Contents itself, are skipped.
-- The Weekly Quiz draws exactly 50 questions from every approved question and is disabled until 50 are approved.
+- The Weekly Quiz draws exactly 50 questions from the approved questions in the topics you tick. It can be turned on once the bank has 50 approved questions.
 - If an article changes after its questions were written, its review panel says so.
 
 ## Known limitations
@@ -92,7 +92,7 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 - **Answers can travel.** Once a trainee has their results, they could show the correct answers to someone who hasn't answered yet. Trainees get different questions, but topics overlap. Click Check answers after everyone has replied, or after the deadline you set.
 - **A trainee could change a reply in Slack** before you refresh. The dashboard grades the text it reads at the first Refresh after the reply and never re-grades it.
 - **Questions are only as right as the article.** Claude is told to use only the article, and each question carries its supporting quote, but always review before approving.
-- **The Knowledge Library is read when the Quiz tab opens** (⟳ reloads it). Topics are found by headings, so renaming an article starts a new, empty topic; its old questions stay in the bank and still count toward the Weekly Quiz.
+- **The Knowledge Library is read when the Quiz tab opens** (⟳ reloads it). Topics are found by headings, so renaming an article starts a new, empty topic; its old questions stay in the bank but can no longer be ticked.
 - **Notion** isn't connected yet; questions come from the Google Doc only.
 - **Slack's send result** wasn't observed in a real call while building. The dashboard reads the message time and channel from the message link it returns; if it can't, it reads replies by time instead. Use **Send me a test quiz** to check it once.
 - **“My Classes”** shows classes you created in the dashboard. Older classes have no creator recorded.
@@ -110,7 +110,7 @@ Accepted reply formats: `1A 2C 3B`, `1. a, 2) c, 3-b`, one per line, or just the
 | Only approved questions used | Engine test; UI test: counts and the “Only N approved questions” blocker update as you approve |
 | Claude not allowed | UI test: clear message, nothing saved |
 | Weekly Quiz exactly 50, disabled under 50 | Engine test (50 from 59); UI test: disabled under 50 approved, enabled at 59 |
-| Weekly locks topics; picking a topic leaves Weekly | UI test |
+| Weekly Quiz uses only the ticked topics | Engine test; UI test: ticked topics stay ticked when it's turned on or off, a quiz from 4 ticked topics contains only those topics, under 50 approved in the ticked topics is blocked with the reason |
 | Quiz length 10–20 | UI blocks values outside the range with a reason |
 | Not enough questions explained | Engine test and UI test (“Only 14 eligible questions…; 15 needed”) |
 | Quiz message has no answers or scores | Engine test and UI test: no quiz DM contains a score, “%”, “correct answer”, the explanation or the supporting quote |

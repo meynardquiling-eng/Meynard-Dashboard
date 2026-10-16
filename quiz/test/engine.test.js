@@ -108,9 +108,11 @@ test("bankQuestions: only approved questions, ids unique across topics", () => {
   assert.deepStrictEqual(out.map((x) => [x.id, x.topic]), [["rescheduling:q1", "Rescheduling"], ["no-claim:q1", "No Claim"]]);
 });
 
-test("questionPool: weekly uses everything, otherwise only chosen topics", () => {
+test("questionPool: only the chosen topics, weekly or not", () => {
   const questions = bank([["A", 3], ["B", 4], ["C", 5]]);
-  assert.strictEqual(E.questionPool(questions, { weekly: true, topics: [] }).length, 12);
+  assert.strictEqual(E.questionPool(questions, { weekly: true, topics: [] }).length, 0);
+  assert.strictEqual(E.questionPool(questions, { weekly: true, topics: ["A", "B", "C"] }).length, 12);
+  assert.strictEqual(E.questionPool(questions, { weekly: true, topics: ["B"] }).length, 4);
   assert.strictEqual(E.questionPool(questions, { weekly: false, topics: ["A", "C"] }).length, 8);
 });
 
