@@ -194,6 +194,25 @@ test("parseAnswers: numbered, lowercase, punctuation, sequence, duplicates, out 
   assert.strictEqual(E.parseAnswers("1 Apple", 5).count, 0); // a word starting with A is not an answer
 });
 
+test("parseAnswers: a pasted question isn't read as answers; real reply formats still are", () => {
+  // A trainee pasted each question with their pick under it. "1. A customer…" must not become 1A.
+  const pasted = "1. A customer used a Groupon and wants to stop. What is the only question?\nC. Whether the charge should be refunded\n\n4. From what date do sign-ups move?\nA. August 3, 2026\n\n8. A customer says they were overcharged. Which issue?\nD. Overcharged Hours";
+  assert.strictEqual(E.parseAnswers(pasted, 15).count, 0);
+  // Formats trainees actually sent.
+  assert.deepStrictEqual(E.parseAnswers("1.A\n2.D\n3.C", 3).answers, ["A", "D", "C"]);
+  assert.deepStrictEqual(E.parseAnswers("11D 12c 13C", 13).answers.slice(10), ["D", "C", "C"]);
+  assert.deepStrictEqual(E.parseAnswers("7C\n8A9\n9D", 9).answers.slice(6), ["C", "A", "D"]);
+  assert.strictEqual(E.parseAnswers("4A 5ABCD 6D", 6).answers[4], null); // several letters is no answer
+  assert.deepStrictEqual(E.parseAnswers("1) a. 2- b! 3: c", 3).answers, ["A", "B", "C"]);
+  // So the next reply, with real answers, is the one graded.
+  const sub = E.firstSubmission([
+    { userId: "U1", ts: "100.1", text: pasted },
+    { userId: "U1", ts: "100.2", text: "1C 2D 3C 4A 5C 6C 7B 8D" },
+  ], "U1", "100.0", 8);
+  assert.strictEqual(sub.ts, "100.2");
+  assert.deepStrictEqual(sub.answers, ["C", "D", "C", "A", "C", "C", "B", "D"]);
+});
+
 test("grade: maps display letters back through the shuffled order", () => {
   const q = [
     { id: "Q1", topic: "T", question: "one", choices: { A: "a", B: "b", C: "c", D: "d" }, correct: "B", order: ["D", "B", "A", "C"] },

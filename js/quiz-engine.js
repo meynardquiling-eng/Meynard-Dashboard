@@ -255,7 +255,9 @@
   function parseAnswers(text, n) {
     const answers = new Array(n).fill(null);
     const t = String(text || "").replace(/<[^>]*>/g, " ");
-    const numbered = [...t.matchAll(/(\d{1,3})\s*[\.\):\-=]?\s*([A-Da-d])(?![A-Za-z])/g)];
+    // The letter must end the answer: next comes a line end, the next number or punctuation, never more words.
+    // So a pasted question ("1. A customer used a Groupon…") isn't read as answer 1A.
+    const numbered = [...t.matchAll(/(\d{1,3})\s*[\.\):\-=]?\s*([A-Da-d])(?=[\s.,;:)!\/|]*(?:$|\d))/gm)];
     if (numbered.length) {
       for (const m of numbered) {
         const i = Number(m[1]) - 1;
