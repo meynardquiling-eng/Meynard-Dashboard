@@ -9,6 +9,7 @@ A dashboard for trainers. A rail on the left switches between tools.
 | Quiz Generator | Trainers only (hidden from viewers who can't edit). Claude writes questions from the Knowledge Library (Google Doc) for you to approve. Pick topics or the Weekly Quiz and a class; each trainee gets a private, randomized quiz as a DM from your own Slack account and answers in one reply. Graded in the dashboard; scores and answers visible to trainers only. See [QUIZ.md](QUIZ.md). |
 | Courseware | Upload videos, PowerPoint, Word, PDF, Excel, images and other files, or add links to Google Slides, Google Docs, Drive, YouTube or Loom. Filter by type, open, rename, tag with a topic, delete. |
 | Zoom Tracker | One tile per cohort. Upload Zoom's participant report (CSV) after class to see, per trainee per day, when they tried to enter (waiting room), were admitted and left, their time in Zoom and how many times they dropped. Unknown Zoom names are assigned once and remembered. Export a day to Google Sheets. Logic in `js/zoom-engine.js`, tests in `zoom/test/`. |
+| Observations | Trainers only. One tile per cohort listing every trainee. Write what you noticed in plain words; Claude sorts it under each trainee you named (it never guesses an unclear name), you check the split, then each observation is saved under that trainee with the date and time. Edit, delete, or export a cohort to Google Sheets. Logic in `js/observation-engine.js`, tests in `observations/test/`. |
 
 ## Where your data is saved
 

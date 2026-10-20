@@ -309,13 +309,13 @@ dialog::backdrop { background: rgba(5, 12, 40, 0.45); }
 .dialog-body h2 { font-size: 17px; }
 .form-field { display: grid; gap: 5px; font-size: 13px; font-weight: 500; }
 .form-field small { color: var(--muted); font-weight: 400; }
-.form-field input, .form-field textarea, .form-field select {
+.form-field input, .form-field textarea, .form-field select, .obs-review-row select, .obs-review-row textarea {
   font: inherit; font-weight: 400; color: var(--fg);
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 8px 10px; width: 100%;
 }
 .form-field textarea { resize: vertical; }
-.form-field input:focus, .form-field textarea:focus, .form-field select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.form-field input:focus, .form-field textarea:focus, .form-field select:focus, .obs-review-row select:focus, .obs-review-row textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 .form-error { color: var(--bad); font-size: 13px; min-height: 0; }
 .form-error:empty { display: none; }
 
@@ -439,3 +439,24 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .z-unmatched { display: grid; gap: 6px; margin: 14px 0; padding: 12px; border-radius: var(--r-sm); background: var(--highlight-soft); }
 .z-unmatched ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .z-unmatched li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+
+/* ---------- Observations ---------- */
+.obs-compose { display: grid; gap: 10px; }
+.obs-compose textarea { width: 100%; resize: vertical; }
+.obs-review { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--r-md); border: 1.5px dashed var(--primary); }
+.obs-review > .min0 { display: grid; gap: 2px; }
+.obs-review ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.obs-review-row { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.obs-review-row textarea { width: 100%; resize: vertical; }
+@media (max-width: 640px) { .obs-review-row { grid-template-columns: minmax(0, 1fr) auto; } .obs-review-row textarea { grid-column: 1 / -1; grid-row: 2; } }
+.obs-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.obs-people { display: grid; gap: 6px; }
+.obs-person { border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--line); }
+.obs-person > summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 10px 12px; cursor: pointer; }
+.obs-person[open] > summary { border-bottom: 1px solid var(--line); }
+.obs-person > p { margin: 0; padding: 10px 12px; }
+.obs-list { list-style: none; margin: 0; padding: 0; }
+.obs-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.obs-item:last-child { border-bottom: 0; }
+.obs-item p { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.obs-item .btn-row { flex-wrap: nowrap; gap: 2px; }

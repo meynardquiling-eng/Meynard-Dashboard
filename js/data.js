@@ -28,6 +28,7 @@
     slackDirectory: {},    // quiz/directory  { "<email>": { userId, status: "found"|"not-found"|"error", error, checkedAt } }
     quizGenerations: [],   // quizGenerations/<genId>  one per Generate click: class, day, topics, length (never overwritten)
     quizzes: {},           // quizzes/<genId>_<traineeId>  questions + answer key, delivery, submission, result
+    observations: {},      // observations/<id>  one trainer observation about one trainee (editors only)
   };
   const listeners = [];
   const notify = () => listeners.forEach((fn) => fn());
@@ -60,7 +61,8 @@
   let warned = false;
   function saveLocal() {
     const ok = store.set("cohorts", state.cohorts) && store.set("materials", state.materials) && store.set("attendance", state.attendance)
-      && store.set("zoomDays", state.zoomDays) && store.set("zoomAliases", state.zoomAliases);
+      && store.set("zoomDays", state.zoomDays) && store.set("zoomAliases", state.zoomAliases)
+      && store.set("observations", state.observations);
     if (!ok && !warned) {
       warned = true;
       toast("This browser isn't letting the app save. Changes will be lost when you close the page.");
@@ -96,6 +98,7 @@
     state.zoomDays = store.get("zoomDays", {});
     state.zoomAliases = store.get("zoomAliases", {});
     state.quizConfig = store.get("quizConfig", null);
+    state.observations = store.get("observations", {});
     notify();
   }
 
@@ -166,6 +169,10 @@
       }, onError);
       db.collection("quizzes").onSnapshot((snap) => {
         state.quizzes = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
+        notify();
+      }, onError);
+      db.collection("observations").onSnapshot((snap) => {
+        state.observations = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
         notify();
       }, onError);
     }
@@ -240,6 +247,10 @@
         if (db) removeDoc("zoom/" + key);
       }
       if (state.zoomAliases[id]) { delete state.zoomAliases[id]; if (db) removeDoc("zoomAliases/" + id); }
+      for (const key of Object.keys(state.observations).filter((k) => state.observations[k].cohortId === id)) {
+        delete state.observations[key];
+        if (db) removeDoc("observations/" + key);
+      }
       removeDoc("cohorts/" + id);
     },
 
@@ -391,6 +402,39 @@
       notify();
       if (db) return write("zoomAliases/" + cohortId, () => db.doc("zoomAliases/" + cohortId).set({ map: clone(map) }));
       store.set("zoomAliases", state.zoomAliases);
+    },
+
+    /* ----- Observations (editors only) ----- */
+    /*
+      observations/<id>: { id, cohortId, traineeId, text, observedAt (ISO), createdAt, createdBy, updatedAt }
+      One document per observation, so two trainers saving at once never overwrite each other.
+    */
+    observationsFor(cohortId) {
+      return Object.values(state.observations).filter((o) => o.cohortId === cohortId);
+    },
+    getObservation(id) { return state.observations[id]; },
+    // Saves new observations ([{ cohortId, traineeId, text, observedAt }]) and returns them with ids.
+    async addObservations(list) {
+      const now = new Date().toISOString();
+      const saved = list.map((o) => ({ id: uid(), ...o, createdAt: now, createdBy: state.perms.userId }));
+      saved.forEach((o) => { state.observations[o.id] = o; });
+      notify();
+      if (db) await Promise.all(saved.map((o) => write("observations/" + o.id, () => db.doc("observations/" + o.id).set(clone(o)))));
+      else saveLocal();
+      return saved;
+    },
+    updateObservation(id, fields) {
+      const o = state.observations[id];
+      if (!o) return;
+      Object.assign(o, fields, { updatedAt: new Date().toISOString() });
+      notify();
+      if (db) return write("observations/" + id, () => db.doc("observations/" + id).set(clone(o)));
+      saveLocal();
+    },
+    deleteObservation(id) {
+      delete state.observations[id];
+      notify();
+      removeDoc("observations/" + id);
     },
 
     /* ----- Courseware materials ----- */

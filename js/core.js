@@ -221,7 +221,7 @@ window.TrainerHub = (function () {
   }
 
   return {
-    tools, registerTool, CLASS_TYPES, fold, setFoldOpen, chooseAction, showDialog,
+    tools, registerTool, CLASS_TYPES, fold, isFoldOpen, setFoldOpen, chooseAction, showDialog,
     esc, pill, icon, initials, plural, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };
