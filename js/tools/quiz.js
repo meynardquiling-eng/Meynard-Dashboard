@@ -713,6 +713,52 @@
       </div>`;
   }
 
+  const SUMMARY = "summary";
+  // "9:00 AM · C-CRM Activity" — what the quiz covered, so quizzes on the same day can be told apart.
+  function genLabel(g) {
+    const time = new Date(g.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const topics = g.topics.join(", ").replace(/\s*\(.*\)\s*$/, "");
+    return `${time} · ${topics.length > 60 ? topics.slice(0, 57) + "…" : topics}`;
+  }
+
+  // Every trainee's score in each of the day's quizzes, side by side, with their average.
+  function daySummary(ctx, cohort, gens, pickers) {
+    const ordered = [...gens].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    const byGen = ordered.map((g) => Object.fromEntries(ctx.data.quizzesFor(g.id).map((q) => [q.traineeId, q])));
+    const names = new Map(cohort.trainees.map((t) => [t.id, t.name]));
+    byGen.forEach((m) => Object.values(m).forEach((q) => { if (!names.has(q.traineeId)) names.set(q.traineeId, q.name); }));
+    const avg = (xs) => (xs.length ? Math.round((xs.reduce((n, x) => n + x, 0) / xs.length) * 10) / 10 : null);
+    const rows = [...names.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([id, name]) => {
+      const pcts = [];
+      const cells = byGen.map((m) => {
+        const q = m[id];
+        if (!q) return `<td class="num muted">Not sent</td>`;
+        if (!q.result) return `<td class="num"><span class="pill ${quizState(q).kind}">${esc(quizState(q).label)}</span></td>`;
+        pcts.push(q.result.pct);
+        return `<td class="num"><strong>${esc(q.result.pct)}%</strong> <span class="muted small">${q.result.score}/${q.result.total}</span></td>`;
+      }).join("");
+      const a = avg(pcts);
+      return { a, all: pcts.length === byGen.length, html: `<tr><td><strong>${esc(name)}</strong></td>${cells}<td class="num"><strong>${a == null ? "—" : a + "%"}</strong>${pcts.length < byGen.length && pcts.length ? `<br><span class="muted small">${pcts.length} of ${byGen.length} graded</span>` : ""}</td></tr>` };
+    });
+    const quizAvgs = ordered.map((g, i) => avg(Object.values(byGen[i]).filter((q) => q.result).map((q) => q.result.pct)));
+    const allAvg = avg(rows.map((r) => r.a).filter((x) => x != null));
+    const perfect = rows.filter((r) => r.a === 100 && r.all).length;
+    return `
+      <div class="card results">
+        <div class="card-head"><h2>Results</h2><div class="btn-row">${pickers}
+          <button class="icon-btn" data-action="quiz:export" ${ui.busy ? "disabled" : ""} title="Export the day's results to Google Sheets" aria-label="Export the day's results to Google Sheets">⇪</button></div></div>
+        <div class="muted small">Day ${esc(ui.showDay)} summary · ${ordered.length} quizzes. Pick a single quiz above to check answers or send messages.</div>
+        <div class="today-stats">
+          <span class="stat-chip"><b>${allAvg == null ? "—" : allAvg + "%"}</b> class average</span>
+          ${ordered.map((g, i) => `<span class="stat-chip"><b>${quizAvgs[i] == null ? "—" : quizAvgs[i] + "%"}</b> ${esc(genLabel(g))}</span>`).join("")}
+          <span class="stat-chip s-present"><b>${perfect}</b> of ${rows.length} at 100%</span>
+        </div>
+        <div class="table-wrap"><table class="table quiz-roster">
+          <thead><tr><th>Trainee</th>${ordered.map((g) => `<th class="num">${esc(genLabel(g))}</th>`).join("")}<th class="num">Average</th></tr></thead>
+          <tbody>${rows.map((r) => r.html).join("")}</tbody></table></div>
+      </div>`;
+  }
+
   function countChips(c) {
     return `
       <div class="today-stats">
@@ -750,7 +796,15 @@
     if (!days.length) return emptyCard(`No quizzes sent to ${cohort.name} yet. Check answers works once a quiz has been sent.`);
     if (!days.includes(ui.showDay)) ui.showDay = days[0];
     const ofDay = gens.filter((g) => g.day === ui.showDay).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-    if (!ofDay.some((g) => g.id === ui.generationId)) ui.generationId = ofDay[0].id;
+    const real = ofDay.filter((g) => !g.test);
+    const canSummarize = real.length > 1;
+    if (!(ui.generationId === SUMMARY && canSummarize) && !ofDay.some((g) => g.id === ui.generationId)) ui.generationId = ofDay[0].id;
+    const picker = `<label class="inline-field" for="quiz-gen">Quiz
+              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === ui.generationId ? "selected" : ""}>${g.test ? "TEST · " : ""}${esc(genLabel(g))}</option>`).join("")}
+                ${canSummarize ? `<option value="${SUMMARY}" ${ui.generationId === SUMMARY ? "selected" : ""}>Day ${ui.showDay} summary (${real.length} quizzes)</option>` : ""}</select></label>`;
+    const dayPicker = `<label class="inline-field" for="quiz-show-day">Showing day
+              <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>`;
+    if (ui.generationId === SUMMARY) return daySummary(ctx, cohort, real, dayPicker + picker);
     const gen = ofDay.find((g) => g.id === ui.generationId);
     const quizzes = ctx.data.quizzesFor(gen.id).sort((a, b) => a.name.localeCompare(b.name));
 
@@ -779,10 +833,8 @@
         <div class="card-head">
           <h2>Results</h2>
           <div class="btn-row">
-            <label class="inline-field" for="quiz-show-day">Showing day
-              <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>
-            ${ofDay.length > 1 ? `<label class="inline-field" for="quiz-gen">Quiz
-              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === gen.id ? "selected" : ""}>${g.test ? "TEST · " : ""}${esc(fmtAt(g.createdAt))} · ${esc(g.id.slice(0, 8))}</option>`).join("")}</select></label>` : ""}
+            ${dayPicker}
+            ${picker}
             <button class="btn" data-action="quiz:checkAnswers" ${ui.busy ? "disabled" : ""}>${ui.busy === "check-answers" || ui.busy === "send-results" ? "Checking" + progressText() : "Check answers"}</button>
             <button class="icon-btn" data-action="quiz:refresh" ${ui.busy ? "disabled" : ""} title="Refresh: read and grade replies without sending anything" aria-label="Refresh results">↻</button>
             <button class="icon-btn" data-action="quiz:slackMenu" ${ui.busy ? "disabled" : ""} title="Send via Slack DM" aria-label="Send via Slack DM">✉</button>
