@@ -714,11 +714,14 @@
   }
 
   const SUMMARY = "summary";
-  // "9:00 AM · C-CRM Activity" — what the quiz covered, so quizzes on the same day can be told apart.
-  function genLabel(g) {
-    const time = new Date(g.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  // "Quiz 1 · C-CRM Activity": its place among the day's quizzes (oldest first) and what it covered.
+  // Test quizzes aren't numbered. dayGens is every quiz of that class and day.
+  function genLabel(g, dayGens) {
     const topics = g.topics.join(", ").replace(/\s*\(.*\)\s*$/, "");
-    return `${time} · ${topics.length > 60 ? topics.slice(0, 57) + "…" : topics}`;
+    const title = topics.length > 60 ? topics.slice(0, 57) + "…" : topics;
+    if (g.test) return `TEST · ${title}`;
+    const n = dayGens.filter((x) => !x.test && String(x.createdAt) <= String(g.createdAt)).length;
+    return `Quiz ${n} · ${title}`;
   }
 
   // Every trainee's score in each of the day's quizzes, side by side, with their average.
@@ -750,11 +753,11 @@
         <div class="muted small">Day ${esc(ui.showDay)} summary · ${ordered.length} quizzes. Pick a single quiz above to check answers or send messages.</div>
         <div class="today-stats">
           <span class="stat-chip"><b>${allAvg == null ? "—" : allAvg + "%"}</b> class average</span>
-          ${ordered.map((g, i) => `<span class="stat-chip"><b>${quizAvgs[i] == null ? "—" : quizAvgs[i] + "%"}</b> ${esc(genLabel(g))}</span>`).join("")}
+          ${ordered.map((g, i) => `<span class="stat-chip"><b>${quizAvgs[i] == null ? "—" : quizAvgs[i] + "%"}</b> ${esc(genLabel(g, ordered))}</span>`).join("")}
           <span class="stat-chip s-present"><b>${perfect}</b> of ${rows.length} at 100%</span>
         </div>
         <div class="table-wrap"><table class="table quiz-roster">
-          <thead><tr><th>Trainee</th>${ordered.map((g) => `<th class="num">${esc(genLabel(g))}</th>`).join("")}<th class="num">Average</th></tr></thead>
+          <thead><tr><th>Trainee</th>${ordered.map((g) => `<th class="num">${esc(genLabel(g, ordered))}</th>`).join("")}<th class="num">Average</th></tr></thead>
           <tbody>${rows.map((r) => r.html).join("")}</tbody></table></div>
       </div>`;
   }
@@ -800,7 +803,7 @@
     const canSummarize = real.length > 1;
     if (!(ui.generationId === SUMMARY && canSummarize) && !ofDay.some((g) => g.id === ui.generationId)) ui.generationId = ofDay[0].id;
     const picker = `<label class="inline-field" for="quiz-gen">Quiz
-              <select id="quiz-gen" data-action-change="quiz:pickGen">${ofDay.map((g) => `<option value="${esc(g.id)}" ${g.id === ui.generationId ? "selected" : ""}>${g.test ? "TEST · " : ""}${esc(genLabel(g))}</option>`).join("")}
+              <select id="quiz-gen" data-action-change="quiz:pickGen">${[...ofDay].reverse().map((g) => `<option value="${esc(g.id)}" ${g.id === ui.generationId ? "selected" : ""}>${esc(genLabel(g, ofDay))}</option>`).join("")}
                 ${canSummarize ? `<option value="${SUMMARY}" ${ui.generationId === SUMMARY ? "selected" : ""}>Day ${ui.showDay} summary (${real.length} quizzes)</option>` : ""}</select></label>`;
     const dayPicker = `<label class="inline-field" for="quiz-show-day">Showing day
               <select id="quiz-show-day" data-action-change="quiz:showDay">${days.map((d) => `<option value="${d}" ${d === ui.showDay ? "selected" : ""}>Day ${d}</option>`).join("")}</select></label>`;
