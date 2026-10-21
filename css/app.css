@@ -469,3 +469,5 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .tl-assign li > .min0 { display: grid; cursor: pointer; }
 .tl-input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 9px; width: min(180px, 42vw); }
 .tl-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.table tr.tl-group th { padding-top: 14px; background: var(--highlight-soft); color: var(--highlight); font: 600 12.5px var(--f-ui); letter-spacing: 0; text-transform: none; }
+.table tr.tl-group th .muted { color: var(--muted); font-weight: 400; }

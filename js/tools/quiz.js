@@ -714,6 +714,27 @@
   }
 
   const SUMMARY = "summary";
+
+  /**
+   * Table rows grouped under each trainee's Team Lead (A to Z, trainees with none last), highest score first
+   * within a group, with a header row per group. items: [{ tl, score (number or null), name, html }].
+   */
+  function teamLeadGroups(items, cols) {
+    const groups = new Map();
+    for (const it of items) {
+      const k = it.tl || "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(it);
+    }
+    const keys = [...groups.keys()].sort((a, b) => (!a) - (!b) || a.localeCompare(b));
+    return keys.map((k) => {
+      const list = groups.get(k).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name));
+      const scored = list.filter((x) => x.score != null).map((x) => x.score);
+      const avg = scored.length ? Math.round((scored.reduce((n, x) => n + x, 0) / scored.length) * 10) / 10 : null;
+      return `<tr class="tl-group"><th colspan="${cols}" scope="rowgroup">${k ? `Team Lead ${esc(k)}` : "No Team Lead set"}
+          <span class="muted small">· ${plural(list.length, "trainee")}${avg == null ? "" : ` · average ${avg}%`}</span></th></tr>` + list.map((x) => x.html).join("");
+    }).join("");
+  }
   // "Quiz 1 · C-CRM Activity": its place among the day's quizzes (oldest first) and what it covered.
   // Test quizzes aren't numbered. dayGens is every quiz of that class and day.
   function genLabel(g, dayGens) {
@@ -741,7 +762,7 @@
         return `<td class="num"><strong>${esc(q.result.pct)}%</strong> <span class="muted small">${q.result.score}/${q.result.total}</span></td>`;
       }).join("");
       const a = avg(pcts);
-      return { a, all: pcts.length === byGen.length, html: `<tr><td><strong>${esc(name)}</strong>${TrainerHub.tlTag(cohort.trainees.find((t) => t.id === id))}</td>${cells}<td class="num"><strong>${a == null ? "—" : a + "%"}</strong>${pcts.length < byGen.length && pcts.length ? `<br><span class="muted small">${pcts.length} of ${byGen.length} graded</span>` : ""}</td></tr>` };
+      return { a, score: a, name, tl: (cohort.trainees.find((t) => t.id === id) || {}).teamLead, all: pcts.length === byGen.length, html: `<tr><td><strong>${esc(name)}</strong>${TrainerHub.tlTag(cohort.trainees.find((t) => t.id === id))}</td>${cells}<td class="num"><strong>${a == null ? "—" : a + "%"}</strong>${pcts.length < byGen.length && pcts.length ? `<br><span class="muted small">${pcts.length} of ${byGen.length} graded</span>` : ""}</td></tr>` };
     });
     const quizAvgs = ordered.map((g, i) => avg(Object.values(byGen[i]).filter((q) => q.result).map((q) => q.result.pct)));
     const allAvg = avg(rows.map((r) => r.a).filter((x) => x != null));
@@ -758,7 +779,7 @@
         </div>
         <div class="table-wrap"><table class="table quiz-roster">
           <thead><tr><th>Trainee</th>${ordered.map((g) => `<th class="num">${esc(genLabel(g, ordered))}</th>`).join("")}<th class="num">Average</th></tr></thead>
-          <tbody>${rows.map((r) => r.html).join("")}</tbody></table></div>
+          <tbody>${teamLeadGroups(rows, ordered.length + 2)}</tbody></table></div>
       </div>`;
   }
 
@@ -812,13 +833,13 @@
     const quizzes = ctx.data.quizzesFor(gen.id).sort((a, b) => a.name.localeCompare(b.name));
     const traineeOf = (q) => cohort.trainees.find((t) => t.id === q.traineeId);
 
-    const rows = quizzes.map((q) => {
+    const rows = teamLeadGroups(quizzes.map((q) => {
       const st = quizState(q);
       const d = q.delivery || {};
       const dKind = { delivered: "ok", failed: "bad", unknown: "warn" }[d.status] || "mute";
       const dLabel = { delivered: "Delivered", failed: "Failed", unknown: "Unconfirmed" }[d.status] || "Sending";
       const answered = q.submission ? q.submission.answers.filter(Boolean).length : 0;
-      return `<tr>
+      const row = `<tr>
         <td><strong>${esc(q.name)}</strong>${TrainerHub.tlTag(traineeOf(q))}</td>
         <td class="small">${esc(q.email)}${q.slackUserId ? `<br><span class="muted">${esc(q.slackUserId)}</span>` : ""}</td>
         <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}${q.resultsError && !(q.resultsSent && q.resultsSent.at) ? `<br><span class="small danger-text">Results not sent: ${esc(q.resultsError)}</span>` : ""}</td>
@@ -827,7 +848,8 @@
         <td class="num"><strong>${q.result ? esc(q.result.pct) + "%" : "—"}</strong></td>
         <td>${q.result ? `<button class="link-btn" data-action="quiz:viewAnswers" data-gen="${esc(gen.id)}" data-trainee="${esc(q.traineeId)}">View answers</button>` : ""}</td>
       </tr>`;
-    }).join("");
+      return { tl: (traineeOf(q) || {}).teamLead, score: q.result ? q.result.pct : null, name: q.name, html: row };
+    }), 7);
     const link = ui.exportLinks[`${cohort.id}_${ui.showDay}`];
     const busyLabel = { refresh: "Reading replies from Slack", "check-answers": "Reading and grading replies", "send-results": "Sending results to trainees", send: "Sending", export: "Creating spreadsheet" }[ui.busy];
     const stalled = gen.status === "sending" && !(ui.busy === "generate" && ui.lastSubmit && ui.lastSubmit.genId === gen.id);
