@@ -104,7 +104,7 @@
       }
       return `
         <tr>
-          <th class="name" scope="row">${esc(t.name)}</th>
+          <th class="name" scope="row">${esc(t.name)}${TrainerHub.tlTag(t)}</th>
           ${p.days.map((d) => dayCell(c, t, d, p, ctx)).join("")}
           <td class="num tot">${daysIn}/${elapsed}</td>
           <td class="num tot pts-total ${points >= 2 ? "danger" : ""}">${fmtPoints(points)}</td>

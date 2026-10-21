@@ -89,14 +89,14 @@
 
   function traineeList(ctx, c) {
     const { groups, orphaned } = O.groupByTrainee(ctx.data.observationsFor(c.id), c.trainees);
-    const person = (key, title, sub, list) => `
+    const person = (key, title, sub, list, t) => `
       <details class="obs-person" data-fold="${esc(key)}" ${isFoldOpen(key, false) ? "open" : ""}>
-        <summary><span class="min0"><strong>${esc(title)}</strong>${sub ? ` <span class="muted small">${esc(sub)}</span>` : ""}</span>
+        <summary><span class="min0"><strong>${esc(title)}</strong>${TrainerHub.tlTag(t)}${sub ? ` <span class="muted small">${esc(sub)}</span>` : ""}</span>
           <span class="mini-counts">${list.length ? `${plural(list.length, "observation")} · latest ${esc(when(list[0].observedAt))}` : "No observations yet"}</span></summary>
         ${list.length ? `<ul class="obs-list">${list.map(observationItem).join("")}</ul>` : `<p class="muted small">Nothing yet.</p>`}
       </details>`;
     return `<div class="obs-people">
-      ${groups.map((g) => person(`obs:${c.id}:${g.trainee.id}`, g.trainee.name, g.trainee.email, g.observations)).join("")}
+      ${groups.map((g) => person(`obs:${c.id}:${g.trainee.id}`, g.trainee.name, g.trainee.email, g.observations, g.trainee)).join("")}
       ${orphaned.length ? person(`obs:${c.id}:removed`, "Trainees no longer in this cohort", "", orphaned) : ""}
     </div>`;
   }
@@ -228,9 +228,9 @@
       async export(el, ctx) {
         const c = ctx.data.getCohort(el.dataset.cohort);
         const { groups, orphaned } = O.groupByTrainee(ctx.data.observationsFor(c.id), c.trainees);
-        const rows = [["Cohort", "Trainee", "Email", "Observed", "Observation"]];
-        for (const g of groups) for (const o of g.observations) rows.push([c.name, g.trainee.name, g.trainee.email || "", when(o.observedAt), o.text]);
-        for (const o of orphaned) rows.push([c.name, "(no longer in cohort)", "", when(o.observedAt), o.text]);
+        const rows = [["Cohort", "Trainee", "Email", "Team Lead", "Observed", "Observation"]];
+        for (const g of groups) for (const o of g.observations) rows.push([c.name, g.trainee.name, g.trainee.email || "", g.trainee.teamLead || "", when(o.observedAt), o.text]);
+        for (const o of orphaned) rows.push([c.name, "(no longer in cohort)", "", "", when(o.observedAt), o.text]);
         el.disabled = true;
         try {
           const res = await ctx.data.drive("create_file", {

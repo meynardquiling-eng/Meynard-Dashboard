@@ -1,5 +1,14 @@
 (function () {
-  const { esc, initials, plural, classTypePill, formatDate, isEmail, openForm, confirmAction, toast, CLASS_TYPES } = TrainerHub;
+  const { esc, initials, plural, classTypePill, formatDate, isEmail, openForm, confirmAction, toast, tlTag, CLASS_TYPES } = TrainerHub;
+
+  const views = {}; // cohortId -> "trainees" | "teamLeads" (per viewer, not saved)
+
+  // Team Lead names to suggest: the cohort's Team Lead split on "and", "&", "," or "/" ("Kevin and Rob" -> Kevin, Rob),
+  // plus every name already given to a trainee.
+  function teamLeadNames(c) {
+    const fromCohort = c.teamLead ? c.teamLead.name.split(/\s*(?:,|&|\/|\band\b)\s*/i) : [];
+    return [...new Set([...fromCohort, ...c.trainees.map((t) => t.teamLead)].map((n) => (n || "").trim()).filter(Boolean))];
+  }
 
   const cohortFields = (c = {}) => [
     { name: "name", label: "Cohort name", required: true, value: c.name, placeholder: "e.g. Care Wave 15" },
@@ -54,9 +63,11 @@
       </div>`;
   }
 
-  const traineeFields = (t = {}) => [
+  const traineeFields = (t = {}, c = null) => [
     { name: "name", label: "Full name", required: true, value: t.name, placeholder: "e.g. Ana Reyes" },
     { name: "email", label: "Work Gmail", type: "email", required: true, value: t.email, placeholder: "name@company.com" },
+    { name: "teamLead", label: "Team Lead (optional)", value: t.teamLead, placeholder: "e.g. Kevin",
+      hint: c && teamLeadNames(c).length ? "In this cohort: " + teamLeadNames(c).join(", ") : "The Team Lead this trainee goes to after training." },
   ];
 
   // Returns an error message if the email is invalid or already used in this cohort.
@@ -73,13 +84,41 @@
     const items = cohort.trainees.map((t) => `
       <li>
         <span class="avatar">${esc(initials(t.name))}</span>
-        <span class="min0"><strong class="ellipsis">${esc(t.name)}</strong><a class="small ellipsis" href="mailto:${esc(t.email)}">${esc(t.email)}</a></span>
+        <span class="min0"><strong class="ellipsis">${esc(t.name)}${tlTag(t)}</strong><a class="small ellipsis" href="mailto:${esc(t.email)}">${esc(t.email)}</a></span>
         <span class="row-actions">
           <button class="link-btn" data-action="cohorts:editTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}" aria-label="Edit ${esc(t.name)}">Edit</button>
           <button class="link-btn danger" data-action="cohorts:deleteTrainee" data-cohort="${cohort.id}" data-trainee="${t.id}" aria-label="Remove ${esc(t.name)}">Remove</button>
         </span>
       </li>`).join("");
     return `<ul class="people scroll">${items}</ul>`;
+  }
+
+  // One row per trainee with their Team Lead, editable in place, and how many trainees each Team Lead has.
+  function teamLeadList(c) {
+    if (!c.trainees.length) return `<div class="empty">No trainees yet.</div>`;
+    const names = teamLeadNames(c);
+    const count = (n) => c.trainees.filter((t) => (t.teamLead || "") === n).length;
+    const unset = count("");
+    return `
+      <div class="today-stats">
+        ${names.map((n) => `<span class="stat-chip"><b>${count(n)}</b> ${esc(n)}</span>`).join("")}
+        <span class="stat-chip ${unset ? "s-late" : ""}"><b>${unset}</b> no Team Lead yet</span>
+      </div>
+      <datalist id="tl-names-${c.id}">${names.map((n) => `<option value="${esc(n)}">`).join("")}</datalist>
+      <ul class="people tl-assign">${c.trainees.map((t) => `
+        <li>
+          <span class="avatar">${esc(initials(t.name))}</span>
+          <label class="min0" for="tl-${c.id}-${t.id}"><strong class="ellipsis">${esc(t.name)}</strong><span class="small muted ellipsis">${esc(t.email)}</span></label>
+          <input id="tl-${c.id}-${t.id}" class="tl-input" list="tl-names-${c.id}" value="${esc(t.teamLead || "")}" placeholder="Team Lead"
+            data-action-change="cohorts:setTraineeTeamLead" data-cohort="${c.id}" data-trainee="${t.id}" autocomplete="off">
+        </li>`).join("")}</ul>
+      <p class="muted small">Type a name or pick one. It saves when you leave the box, and shows next to the trainee on every tab.</p>`;
+  }
+
+  function viewTabs(c) {
+    const v = views[c.id] || "trainees";
+    const tab = (id, label) => `<button class="seg ${v === id ? "on" : ""}" data-action="cohorts:view" data-cohort="${c.id}" data-view="${id}" aria-pressed="${v === id}">${label}</button>`;
+    return `<div class="segs" role="group" aria-label="Show">${tab("trainees", "Trainees")}${tab("teamLeads", "Team Leads")}</div>`;
   }
 
   TrainerHub.registerTool({
@@ -124,7 +163,8 @@
           ${teamLeadRow(c)}
           ${slackRow(c)}
           ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
-          ${traineeList(c)}
+          ${viewTabs(c)}
+          ${(views[c.id] || "trainees") === "teamLeads" ? teamLeadList(c) : traineeList(c)}
           <div class="btn-row">
             <button class="btn" data-action="cohorts:addTrainee" data-cohort="${c.id}">+ Add trainee</button>
             <button class="btn secondary" data-action="cohorts:bulkAdd" data-cohort="${c.id}">Paste a list</button>
@@ -209,7 +249,7 @@
       addTrainee(el, ctx) {
         const cohort = ctx.data.getCohort(el.dataset.cohort);
         openForm({
-          title: `Add trainee to ${cohort.name}`, submitLabel: "Add trainee", fields: traineeFields(),
+          title: `Add trainee to ${cohort.name}`, submitLabel: "Add trainee", fields: traineeFields({}, cohort),
           onSubmit(v) {
             const problem = checkEmail(cohort, v.email);
             if (problem) return problem;
@@ -251,7 +291,7 @@
         const cohort = ctx.data.getCohort(el.dataset.cohort);
         const trainee = cohort.trainees.find((t) => t.id === el.dataset.trainee);
         openForm({
-          title: "Edit trainee", fields: traineeFields(trainee),
+          title: "Edit trainee", fields: traineeFields(trainee, cohort),
           onSubmit(v) {
             const problem = checkEmail(cohort, v.email, trainee.id);
             if (problem) return problem;
@@ -259,6 +299,17 @@
             ctx.rerender();
           },
         });
+      },
+      view(el, ctx) { views[el.dataset.cohort] = el.dataset.view; ctx.rerender(); },
+      setTraineeTeamLead(el, ctx) {
+        const cohort = ctx.data.getCohort(el.dataset.cohort);
+        const trainee = cohort && cohort.trainees.find((t) => t.id === el.dataset.trainee);
+        if (!trainee) return;
+        const name = el.value.trim();
+        if ((trainee.teamLead || "") === name) return;
+        ctx.data.updateTrainee(cohort.id, trainee.id, { teamLead: name });
+        ctx.rerender();
+        toast(name ? `${trainee.name} goes to ${name}` : `Team Lead cleared for ${trainee.name}`);
       },
       deleteTrainee(el, ctx) {
         const cohort = ctx.data.getCohort(el.dataset.cohort);

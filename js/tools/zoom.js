@@ -61,11 +61,11 @@
     const body = rows.map((r) => {
       const t = r.trainee;
       if (r.status === "absent") {
-        return `<tr class="z-absent"><td><strong>${esc(t.name)}</strong><br><span class="muted small">${esc(t.email || "")}</span></td>
+        return `<tr class="z-absent"><td><strong>${esc(t.name)}</strong>${TrainerHub.tlTag(t)}<br><span class="muted small">${esc(t.email || "")}</span></td>
           <td colspan="5"><span class="pill bad">Not in Zoom</span></td></tr>`;
       }
       return `<tr>
-        <td><strong>${esc(t.name)}</strong><br><span class="muted small">${esc(t.email || "")}</span></td>
+        <td><strong>${esc(t.name)}</strong>${TrainerHub.tlTag(t)}<br><span class="muted small">${esc(t.email || "")}</span></td>
         <td>${triedCell(r, doc)}</td>
         <td>${r.admitted ? timeCell(r.admitted) : `<span class="pill warn">Never admitted</span>`}</td>
         <td>${timeCell(r.left)}</td>
@@ -226,9 +226,9 @@
         const date = currentDate(ctx, c);
         const sum = summary(ctx, c, date);
         if (!sum) return;
-        const rows = [["Cohort", "Date", "Trainee", "Email", "Tried to enter", "Admitted", "Left", "Time in Zoom (minutes)", "Drops", "Status"]];
+        const rows = [["Cohort", "Date", "Trainee", "Email", "Team Lead", "Tried to enter", "Admitted", "Left", "Time in Zoom (minutes)", "Drops", "Status"]];
         for (const r of sum.rows) {
-          rows.push([c.name, date, r.trainee.name, r.trainee.email || "",
+          rows.push([c.name, date, r.trainee.name, r.trainee.email || "", r.trainee.teamLead || "",
             r.triedToEnter ? Z.clockLabel(r.triedToEnter) : r.joinedDirectly ? "Joined directly" : r.status === "absent" ? "" : "Not in report",
             r.admitted ? Z.clockLabel(r.admitted) : "", r.left ? Z.clockLabel(r.left) : "",
             r.status === "present" ? r.minutes : "", r.status === "present" ? r.drops : "",

@@ -34,6 +34,9 @@ window.TrainerHub = (function () {
   const classTypePill = (type) =>
     type ? `<span class="pill class-${type.toLowerCase().replace(/[^a-z]+/g, "-")}">${esc(type)}</span>` : "";
 
+  // A trainee's Team Lead as a small label beside their name (nothing when none is set).
+  const tlTag = (t) => (t && t.teamLead ? ` <span class="tl-tag" title="Team Lead">TL ${esc(t.teamLead)}</span>` : "");
+
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
   const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -222,7 +225,7 @@ window.TrainerHub = (function () {
 
   return {
     tools, registerTool, CLASS_TYPES, fold, isFoldOpen, setFoldOpen, chooseAction, showDialog,
-    esc, pill, icon, initials, plural, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
+    esc, pill, icon, initials, plural, tlTag, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };
 })();

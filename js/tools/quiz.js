@@ -496,9 +496,9 @@
 
   async function exportDay(ctx, cohort, day) {
     const gens = ctx.data.quizGenerations.filter((g) => g.classId === cohort.id && g.day === day && !g.test);
-    const rows = [["Class", "Training day", "Generated", "Generation ID", "Topics", "Trainee", "Email", "Slack user ID", "Delivery", "Quiz status", "Submitted", "Score", "Total", "Score %", "Answers"]];
+    const rows = [["Class", "Training day", "Generated", "Generation ID", "Topics", "Trainee", "Email", "Team Lead", "Slack user ID", "Delivery", "Quiz status", "Submitted", "Score", "Total", "Score %", "Answers"]];
     for (const g of gens) for (const q of ctx.data.quizzesFor(g.id).sort((a, b) => a.name.localeCompare(b.name))) {
-      rows.push([cohort.name, day, fmtAt(g.createdAt), g.id, g.topics.join(", "), q.name, q.email, q.slackUserId || "", (q.delivery || {}).status || "",
+      rows.push([cohort.name, day, fmtAt(g.createdAt), g.id, g.topics.join(", "), q.name, q.email, (cohort.trainees.find((t) => t.id === q.traineeId) || {}).teamLead || "", q.slackUserId || "", (q.delivery || {}).status || "",
         quizState(q).label, q.submission ? fmtAt(q.submission.at) : "", q.result ? q.result.score : "", q.result ? q.result.total : "", q.result ? q.result.pct : "",
         q.result ? q.result.detail.map((d) => `${d.n}:${d.answerGiven.split(".")[0]}${d.correct ? "✓" : "✗"}`).join(" ") : ""]);
     }
@@ -658,7 +658,7 @@
       <div class="roster-preview">
         <div class="card-head"><strong>${esc(cohort.name)} roster</strong><span class="muted small">${ready} of ${cohort.trainees.length} can receive quizzes in Slack</span></div>
         ${cohort.trainees.length ? `<ul class="mini-roster">${statuses.map(({ t, s }) => `
-          <li><span class="min0 ellipsis">${esc(t.name)} <span class="muted small">${esc(t.email || "no email")}</span></span><span class="pill ${s.kind}" title="${esc(s.detail || "")}">${esc(s.label)}</span></li>`).join("")}</ul>`
+          <li><span class="min0 ellipsis">${esc(t.name)}${TrainerHub.tlTag(t)} <span class="muted small">${esc(t.email || "no email")}</span></span><span class="pill ${s.kind}" title="${esc(s.detail || "")}">${esc(s.label)}</span></li>`).join("")}</ul>`
           : `<div class="empty">No trainees in this class. Add them in Cohorts.</div>`}
         <div class="btn-row">
           <button class="btn secondary" data-action="quiz:check" ${cohort.trainees.length && !ui.busy ? "" : "disabled"}>${ui.busy === "check" ? "Checking Slack accounts" + progressText() : "Check Slack accounts"}</button>
@@ -741,7 +741,7 @@
         return `<td class="num"><strong>${esc(q.result.pct)}%</strong> <span class="muted small">${q.result.score}/${q.result.total}</span></td>`;
       }).join("");
       const a = avg(pcts);
-      return { a, all: pcts.length === byGen.length, html: `<tr><td><strong>${esc(name)}</strong></td>${cells}<td class="num"><strong>${a == null ? "—" : a + "%"}</strong>${pcts.length < byGen.length && pcts.length ? `<br><span class="muted small">${pcts.length} of ${byGen.length} graded</span>` : ""}</td></tr>` };
+      return { a, all: pcts.length === byGen.length, html: `<tr><td><strong>${esc(name)}</strong>${TrainerHub.tlTag(cohort.trainees.find((t) => t.id === id))}</td>${cells}<td class="num"><strong>${a == null ? "—" : a + "%"}</strong>${pcts.length < byGen.length && pcts.length ? `<br><span class="muted small">${pcts.length} of ${byGen.length} graded</span>` : ""}</td></tr>` };
     });
     const quizAvgs = ordered.map((g, i) => avg(Object.values(byGen[i]).filter((q) => q.result).map((q) => q.result.pct)));
     const allAvg = avg(rows.map((r) => r.a).filter((x) => x != null));
@@ -810,6 +810,7 @@
     if (ui.generationId === SUMMARY) return daySummary(ctx, cohort, real, dayPicker + picker);
     const gen = ofDay.find((g) => g.id === ui.generationId);
     const quizzes = ctx.data.quizzesFor(gen.id).sort((a, b) => a.name.localeCompare(b.name));
+    const traineeOf = (q) => cohort.trainees.find((t) => t.id === q.traineeId);
 
     const rows = quizzes.map((q) => {
       const st = quizState(q);
@@ -818,7 +819,7 @@
       const dLabel = { delivered: "Delivered", failed: "Failed", unknown: "Unconfirmed" }[d.status] || "Sending";
       const answered = q.submission ? q.submission.answers.filter(Boolean).length : 0;
       return `<tr>
-        <td><strong>${esc(q.name)}</strong></td>
+        <td><strong>${esc(q.name)}</strong>${TrainerHub.tlTag(traineeOf(q))}</td>
         <td class="small">${esc(q.email)}${q.slackUserId ? `<br><span class="muted">${esc(q.slackUserId)}</span>` : ""}</td>
         <td><span class="pill ${dKind}">${dLabel}</span>${d.error ? `<br><span class="small danger-text">${esc(d.error)}</span>` : ""}${q.refreshError ? `<br><span class="small danger-text">Couldn't read replies: ${esc(q.refreshError)}</span>` : ""}${q.resultsError && !(q.resultsSent && q.resultsSent.at) ? `<br><span class="small danger-text">Results not sent: ${esc(q.resultsError)}</span>` : ""}</td>
         <td><span class="pill ${st.kind}">${esc(st.label)}</span>${!q.submission && q.refreshedAt ? `<br><span class="small muted">No answer found yet (checked ${esc(fmtAt(q.refreshedAt))})</span>` : ""}${q.submission && answered < q.questions.length ? `<br><span class="small muted">Answered ${answered} of ${q.questions.length}</span>` : ""}</td>
