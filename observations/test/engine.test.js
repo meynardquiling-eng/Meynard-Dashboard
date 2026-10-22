@@ -61,4 +61,28 @@ test("groupByTrainee lists every trainee in roster order, newest first, and keep
   assert.deepStrictEqual(orphaned.map((o) => o.id), ["c"]);
 });
 
-console.log(`\n${passed}/7 passed`);
+// 20 weekdays from Mon 2026-10-19.
+const days = [];
+for (const d = new Date(Date.UTC(2026, 9, 19)); days.length < 20; d.setUTCDate(d.getUTCDate() + 1))
+  if (d.getUTCDay() % 6) days.push(d.toISOString().slice(0, 10));
+
+test("weekOf: training days 1-5 are week 1, and so on; weekends belong to the week before", () => {
+  assert.strictEqual(O.weekOf("2026-10-19", days), 1);
+  assert.strictEqual(O.weekOf("2026-10-23", days), 1);
+  assert.strictEqual(O.weekOf("2026-10-25", days), 1); // Sunday after week 1
+  assert.strictEqual(O.weekOf("2026-10-26", days), 2);
+  assert.strictEqual(O.weekOf("2026-11-13", days), 4);
+  assert.strictEqual(O.weekOf("2026-10-18", days), 0);
+  assert.strictEqual(O.weekOf("2026-11-16", days), O.WEEK_AFTER);
+  assert.strictEqual(O.weekCount(days), 4);
+  assert.deepStrictEqual(O.weekRange(2, days), { start: "2026-10-26", end: "2026-10-30" });
+  assert.strictEqual(O.weekRange(0, days), null);
+});
+
+test("groupByWeek: newest week first, each observation once", () => {
+  const obs = [{ id: "a", d: "2026-10-20" }, { id: "b", d: "2026-10-27" }, { id: "c", d: "2026-10-21" }, { id: "e", d: "2026-10-16" }];
+  const g = O.groupByWeek(obs, days, (o) => o.d);
+  assert.deepStrictEqual(g.map((x) => [x.week, x.observations.map((o) => o.id)]), [[2, ["b"]], [1, ["a", "c"]], [0, ["e"]]]);
+});
+
+console.log(`\n${passed}/9 passed`);

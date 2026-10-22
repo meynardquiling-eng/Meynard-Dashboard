@@ -75,7 +75,46 @@ ${note}
     return { groups, orphaned };
   }
 
-  const api = { splitPrompt, checkSplit, groupByTrainee, MAX_TEXT };
+  /* ---------------- Training weeks ----------------
+     trainingDays is the cohort's 20 weekday dates (TrainerHub.schedule.trainingDays). Week 1 is days 1-5, and so on.
+     Week 0 means before training started; WEEK_AFTER means after it ended. */
+  const WEEK_AFTER = 99;
+
+  function weekOf(date, trainingDays) {
+    if (!trainingDays.length) return 1;
+    if (date < trainingDays[0]) return 0;
+    if (date > trainingDays[trainingDays.length - 1]) return WEEK_AFTER;
+    const i = trainingDays.filter((d) => d <= date).length - 1; // last training day on or before the date
+    return Math.floor(i / 5) + 1;
+  }
+
+  function weekCount(trainingDays) { return Math.max(1, Math.ceil(trainingDays.length / 5)); }
+
+  /** First and last training day of a week, or null for before/after training. */
+  function weekRange(week, trainingDays) {
+    const days = trainingDays.slice((week - 1) * 5, week * 5);
+    return week >= 1 && days.length ? { start: days[0], end: days[days.length - 1] } : null;
+  }
+
+  /** Observations grouped by training week, newest week first. dateOf(observation) gives its calendar date. */
+  function groupByWeek(observations, trainingDays, dateOf) {
+    const byWeek = new Map();
+    for (const o of observations) {
+      const w = weekOf(dateOf(o), trainingDays);
+      if (!byWeek.has(w)) byWeek.set(w, []);
+      byWeek.get(w).push(o);
+    }
+    return [...byWeek.entries()].sort((a, b) => b[0] - a[0]).map(([week, list]) => ({ week, observations: list }));
+  }
+
+  // The weekly progress tags, in the order they're offered.
+  const STATUSES = [
+    { id: "behind", label: "Behind" },
+    { id: "good", label: "Doing good" },
+    { id: "excellent", label: "Excellent" },
+  ];
+
+  const api = { splitPrompt, checkSplit, groupByTrainee, MAX_TEXT, weekOf, weekCount, weekRange, groupByWeek, WEEK_AFTER, STATUSES };
   if (root.TrainerHub) root.TrainerHub.observationEngine = api;
   if (typeof module !== "undefined") module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

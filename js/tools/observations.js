@@ -6,11 +6,50 @@
 (function () {
   const { esc, plural, classTypePill, fold, isFoldOpen, toast } = TrainerHub;
   const O = TrainerHub.observationEngine;
+  const S = TrainerHub.schedule;
 
   // Per viewer, not saved: the note being written and the split waiting for review, per cohort.
   const drafts = {};  // cohortId -> note text
   const reviews = {}; // cohortId -> { observedAt, rows: [{ traineeId, text }] }
   const busy = {};    // cohortId -> true while Claude is sorting
+  const pickedWeek = {}; // cohortId -> week being tagged
+
+  /* ---------------- Training weeks and weekly tags ---------------- */
+  const daysOf = (c) => S.trainingDays(c.startDate);
+  const dateOf = (o) => S.central(o.observedAt).date;
+  const shortDay = (d) => new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  function weekLabel(w, days) {
+    if (w === 0) return "Before training";
+    if (w === O.WEEK_AFTER) return "After training";
+    const r = O.weekRange(w, days);
+    return r ? `Week ${w} · ${shortDay(r.start)} – ${shortDay(r.end)}` : `Week ${w}`;
+  }
+  // The week being tagged: the one picked, else this week (clamped to the training weeks).
+  function weekFor(c) {
+    const days = daysOf(c);
+    const n = O.weekCount(days);
+    if (pickedWeek[c.id]) return pickedWeek[c.id];
+    const w = O.weekOf(S.central().date, days);
+    return w === O.WEEK_AFTER ? n : Math.min(Math.max(w, 1), n);
+  }
+  const statusInfo = (id) => O.STATUSES.find((x) => x.id === id);
+  const statusPill = (id) => (id ? `<span class="wk-pill wk-${id}">${esc(statusInfo(id).label)}</span>` : "");
+
+  // Behind / Doing good / Excellent for one trainee and the picked week; click again to clear.
+  function tagButtons(ctx, c, t, week) {
+    const cur = ctx.data.weekStatus(c.id, t.id, week);
+    return `<span class="wk-tags" role="group" aria-label="Week ${week} progress for ${esc(t.name)}">${O.STATUSES.map((x) =>
+      `<button class="wk-tag wk-${x.id} ${cur === x.id ? "on" : ""}" aria-pressed="${cur === x.id}" data-action="observations:tag" data-cohort="${c.id}" data-trainee="${t.id}" data-week="${week}" data-status="${x.id}">${esc(x.label)}</button>`).join("")}</span>`;
+  }
+  // One dot per training week, coloured by that week's tag.
+  function history(ctx, c, t) {
+    const n = O.weekCount(daysOf(c));
+    const tags = ctx.data.weekStatuses(c.id, t.id);
+    return `<span class="wk-history" aria-label="Weekly progress">${Array.from({ length: n }, (_, i) => {
+      const st = tags[i + 1] && tags[i + 1].status;
+      return `<span class="wk-dot ${st ? "wk-" + st : ""}" title="Week ${i + 1}: ${st ? statusInfo(st).label : "not tagged"}">W${i + 1}</span>`;
+    }).join("")}</span>`;
+  }
 
   const when = (iso) => new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
   const localInput = (iso) => {
@@ -87,18 +126,46 @@
       </li>`;
   }
 
+  // A trainee's observations under a heading per training week, newest week first, with that week's tag.
+  function byWeek(ctx, c, list, t) {
+    const days = daysOf(c);
+    return O.groupByWeek(list, days, dateOf).map((g) => `
+      <div class="obs-week"><span>${esc(weekLabel(g.week, days))}</span>${t && g.week >= 1 && g.week !== O.WEEK_AFTER ? statusPill(ctx.data.weekStatus(c.id, t.id, g.week)) : ""}
+        <span class="muted small">${plural(g.observations.length, "observation")}</span></div>
+      <ul class="obs-list">${g.observations.map(observationItem).join("")}</ul>`).join("");
+  }
+
   function traineeList(ctx, c) {
     const { groups, orphaned } = O.groupByTrainee(ctx.data.observationsFor(c.id), c.trainees);
+    const week = weekFor(c);
     const person = (key, title, sub, list, t) => `
       <details class="obs-person" data-fold="${esc(key)}" ${isFoldOpen(key, false) ? "open" : ""}>
-        <summary><span class="min0"><strong>${esc(title)}</strong>${TrainerHub.tlTag(t)}${sub ? ` <span class="muted small">${esc(sub)}</span>` : ""}</span>
-          <span class="mini-counts">${list.length ? `${plural(list.length, "observation")} · latest ${esc(when(list[0].observedAt))}` : "No observations yet"}</span></summary>
-        ${list.length ? `<ul class="obs-list">${list.map(observationItem).join("")}</ul>` : `<p class="muted small">Nothing yet.</p>`}
+        <summary><span class="min0"><strong>${esc(title)}</strong>${TrainerHub.tlTag(t)}${sub ? ` <span class="muted small">${esc(sub)}</span>` : ""}
+            <span class="mini-counts">${list.length ? `${plural(list.length, "observation")} · latest ${esc(when(list[0].observedAt))}` : "No observations yet"}</span></span>
+          ${t ? `<span class="wk-row">${tagButtons(ctx, c, t, week)}${history(ctx, c, t)}</span>` : ""}</summary>
+        ${list.length ? byWeek(ctx, c, list, t) : `<p class="muted small">Nothing yet.</p>`}
       </details>`;
     return `<div class="obs-people">
       ${groups.map((g) => person(`obs:${c.id}:${g.trainee.id}`, g.trainee.name, g.trainee.email, g.observations, g.trainee)).join("")}
       ${orphaned.length ? person(`obs:${c.id}:removed`, "Trainees no longer in this cohort", "", orphaned) : ""}
     </div>`;
+  }
+
+  function weekPicker(c) {
+    const days = daysOf(c);
+    const week = weekFor(c);
+    return `<label class="inline-field" for="obs-week-${c.id}">Tagging
+      <select id="obs-week-${c.id}" data-action-change="observations:pickWeek" data-cohort="${c.id}">${Array.from({ length: O.weekCount(days) }, (_, i) =>
+        `<option value="${i + 1}" ${i + 1 === week ? "selected" : ""}>${esc(weekLabel(i + 1, days))}</option>`).join("")}</select></label>`;
+  }
+  // How many trainees have each tag in the picked week.
+  function weekCounts(ctx, c) {
+    const week = weekFor(c);
+    const tags = c.trainees.map((t) => ctx.data.weekStatus(c.id, t.id, week));
+    const untagged = tags.filter((x) => !x).length;
+    return `<div class="today-stats">${O.STATUSES.slice().reverse().map((x) =>
+      `<span class="stat-chip wk-chip wk-${x.id}"><b>${tags.filter((y) => y === x.id).length}</b> ${esc(x.label)}</span>`).join("")}
+      <span class="stat-chip"><b>${untagged}</b> not tagged for Week ${week}</span></div>`;
   }
 
   function cohortBody(ctx, c) {
@@ -107,7 +174,9 @@
       ${composer(c)}
       ${reviewPanel(c)}
       <div class="obs-bar"><strong>Trainees</strong>
-        ${count && ctx.data.mode === "shared" ? `<button class="btn secondary" data-action="observations:export" data-cohort="${c.id}">Export to Google Sheets</button>` : ""}</div>
+        <div class="btn-row">${weekPicker(c)}
+        ${count && ctx.data.mode === "shared" ? `<button class="btn secondary" data-action="observations:export" data-cohort="${c.id}">Export to Google Sheets</button>` : ""}</div></div>
+      ${weekCounts(ctx, c)}
       ${traineeList(ctx, c)}`;
   }
 
@@ -147,6 +216,15 @@
 
     actions: {
       draft(el) { drafts[el.dataset.cohort] = el.value; },
+      pickWeek(el, ctx) { pickedWeek[el.dataset.cohort] = Number(el.value); ctx.rerender(); },
+      // The tag buttons sit in a trainee's header row; keep the click from opening or closing it.
+      tag(el, ctx, event) {
+        if (event) event.preventDefault();
+        const { cohort, trainee, week, status } = el.dataset;
+        const cur = ctx.data.weekStatus(cohort, trainee, week);
+        ctx.data.setWeekStatus(cohort, trainee, week, cur === status ? null : status);
+        ctx.rerender();
+      },
 
       async sort(el, ctx) {
         const c = ctx.data.getCohort(el.dataset.cohort);
@@ -228,9 +306,12 @@
       async export(el, ctx) {
         const c = ctx.data.getCohort(el.dataset.cohort);
         const { groups, orphaned } = O.groupByTrainee(ctx.data.observationsFor(c.id), c.trainees);
-        const rows = [["Cohort", "Trainee", "Email", "Team Lead", "Observed", "Observation"]];
-        for (const g of groups) for (const o of g.observations) rows.push([c.name, g.trainee.name, g.trainee.email || "", g.trainee.teamLead || "", when(o.observedAt), o.text]);
-        for (const o of orphaned) rows.push([c.name, "(no longer in cohort)", "", "", when(o.observedAt), o.text]);
+        const days = daysOf(c);
+        const wk = (o) => weekLabel(O.weekOf(dateOf(o), days), days);
+        const tagOf = (t, o) => { const w = O.weekOf(dateOf(o), days); const st = t && ctx.data.weekStatus(c.id, t.id, w); return st ? statusInfo(st).label : ""; };
+        const rows = [["Cohort", "Trainee", "Email", "Team Lead", "Week", "Week progress", "Observed", "Observation"]];
+        for (const g of groups) for (const o of g.observations) rows.push([c.name, g.trainee.name, g.trainee.email || "", g.trainee.teamLead || "", wk(o), tagOf(g.trainee, o), when(o.observedAt), o.text]);
+        for (const o of orphaned) rows.push([c.name, "(no longer in cohort)", "", "", wk(o), "", when(o.observedAt), o.text]);
         el.disabled = true;
         try {
           const res = await ctx.data.drive("create_file", {

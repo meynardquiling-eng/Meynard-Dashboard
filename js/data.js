@@ -29,6 +29,7 @@
     quizGenerations: [],   // quizGenerations/<genId>  one per Generate click: class, day, topics, length (never overwritten)
     quizzes: {},           // quizzes/<genId>_<traineeId>  questions + answer key, delivery, submission, result
     observations: {},      // observations/<id>  one trainer observation about one trainee (editors only)
+    traineeProgress: {},   // traineeProgress/<cohortId>_<traineeId>  weekly Behind / Doing good / Excellent tags (editors only)
   };
   const listeners = [];
   const notify = () => listeners.forEach((fn) => fn());
@@ -62,7 +63,7 @@
   function saveLocal() {
     const ok = store.set("cohorts", state.cohorts) && store.set("materials", state.materials) && store.set("attendance", state.attendance)
       && store.set("zoomDays", state.zoomDays) && store.set("zoomAliases", state.zoomAliases)
-      && store.set("observations", state.observations);
+      && store.set("observations", state.observations) && store.set("traineeProgress", state.traineeProgress);
     if (!ok && !warned) {
       warned = true;
       toast("This browser isn't letting the app save. Changes will be lost when you close the page.");
@@ -99,6 +100,7 @@
     state.zoomAliases = store.get("zoomAliases", {});
     state.quizConfig = store.get("quizConfig", null);
     state.observations = store.get("observations", {});
+    state.traineeProgress = store.get("traineeProgress", {});
     notify();
   }
 
@@ -173,6 +175,10 @@
       }, onError);
       db.collection("observations").onSnapshot((snap) => {
         state.observations = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
+        notify();
+      }, onError);
+      db.collection("traineeProgress").onSnapshot((snap) => {
+        state.traineeProgress = Object.fromEntries(snap.docs.map((d) => [d.id, clone(d.data())]));
         notify();
       }, onError);
     }
@@ -250,6 +256,10 @@
       for (const key of Object.keys(state.observations).filter((k) => state.observations[k].cohortId === id)) {
         delete state.observations[key];
         if (db) removeDoc("observations/" + key);
+      }
+      for (const key of Object.keys(state.traineeProgress).filter((k) => state.traineeProgress[k].cohortId === id)) {
+        delete state.traineeProgress[key];
+        if (db) removeDoc("traineeProgress/" + key);
       }
       removeDoc("cohorts/" + id);
     },
@@ -435,6 +445,32 @@
       delete state.observations[id];
       notify();
       removeDoc("observations/" + id);
+    },
+
+    /*
+      traineeProgress/<cohortId>_<traineeId>: { cohortId, traineeId, weeks: { "<week>": { status, at, by } } }
+      status is "behind", "good" or "excellent" (TrainerHub.observationEngine.STATUSES).
+    */
+    weekStatus(cohortId, traineeId, week) {
+      const doc = state.traineeProgress[`${cohortId}_${traineeId}`];
+      const w = doc && doc.weeks && doc.weeks[week];
+      return w ? w.status : null;
+    },
+    weekStatuses(cohortId, traineeId) {
+      const doc = state.traineeProgress[`${cohortId}_${traineeId}`];
+      return (doc && doc.weeks) || {};
+    },
+    // Sets (or with null clears) one trainee's tag for one week.
+    setWeekStatus(cohortId, traineeId, week, status) {
+      const key = `${cohortId}_${traineeId}`;
+      const doc = state.traineeProgress[key] || { cohortId, traineeId, weeks: {} };
+      doc.weeks = { ...(doc.weeks || {}) };
+      if (status) doc.weeks[week] = { status, at: new Date().toISOString(), by: state.perms.userId };
+      else delete doc.weeks[week];
+      state.traineeProgress[key] = doc;
+      notify();
+      if (db) return write("traineeProgress/" + key, () => db.doc("traineeProgress/" + key).set(clone(doc)));
+      saveLocal();
     },
 
     /* ----- Courseware materials ----- */
