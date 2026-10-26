@@ -48,6 +48,28 @@
   const ACCEPT = KINDS.flatMap((k) => k.ext.map((e) => "." + e)).join(",") + ",video/*,audio/*,image/*";
 
   let filter = "all";
+  const collapsed = new Set(); // kinds folded away in the All view
+
+  // The All view: one section per kind, in KINDS order, each foldable.
+  function groupedView(materials, ctx) {
+    return KINDS.map((kind) => {
+      const items = materials.filter((m) => m.kind === kind.id);
+      if (!items.length) return "";
+      const open = !collapsed.has(kind.id);
+      return `
+        <section class="kind-group">
+          <div class="kind-group-head">
+            <button class="kind-group-toggle" data-action="courseware:toggleGroup" data-kind="${kind.id}" aria-expanded="${open}">
+              <span class="chev" aria-hidden="true"></span>
+              <span class="kind-dot kind-${kind.id}" aria-hidden="true"></span>
+              ${esc(kind.label)} <span class="muted">${items.length}</span>
+            </button>
+            <button class="link-btn" data-action="courseware:filter" data-kind="${kind.id}">Show only ${esc(kind.label.toLowerCase())}</button>
+          </div>
+          ${open ? `<div class="materials">${items.map((m) => card(m, ctx)).join("")}</div>` : ""}
+        </section>`;
+    }).join("");
+  }
 
   function card(m, ctx) {
     const kind = kindById(m.kind);
@@ -108,7 +130,7 @@
 
         ${materials.length ? `<div class="chips">${chips}</div>` : ""}
         ${shown.length
-          ? `<div class="materials">${shown.map((m) => card(m, ctx)).join("")}</div>`
+          ? filter === "all" ? groupedView(materials, ctx) : `<div class="materials">${shown.map((m) => card(m, ctx)).join("")}</div>`
           : materials.length ? `<div class="empty">No materials of this type.</div>` : ""}`;
     },
 
@@ -177,6 +199,11 @@
       },
       filter(el, ctx) {
         filter = el.dataset.kind;
+        ctx.rerender();
+      },
+      toggleGroup(el, ctx) {
+        const k = el.dataset.kind;
+        if (collapsed.has(k)) collapsed.delete(k); else collapsed.add(k);
         ctx.rerender();
       },
     },

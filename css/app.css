@@ -297,6 +297,13 @@ details summary { cursor: pointer; color: var(--primary); font-size: 13px; }
 .kind-image, .kind-audio { --kind: var(--type-media); }
 .kind-link   { --kind: var(--type-link); }
 
+.kind-group + .kind-group { margin-top: 18px; }
+.kind-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.kind-group-toggle { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--fg); background: none; padding: 2px 0; }
+.kind-group-toggle .muted { font: 400 12px var(--f-mono); }
+.kind-group-toggle[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+.kind-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--kind, var(--muted)); }
+
 /* ---------- Dialog (forms and confirmations) ---------- */
 dialog {
   width: min(480px, calc(100vw - 32px));
