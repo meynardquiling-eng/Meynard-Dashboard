@@ -1,5 +1,5 @@
 (function () {
-  const { esc, plural, classTypePill } = TrainerHub;
+  const { esc, plural, classTypePill, isActiveOn } = TrainerHub;
   const S = TrainerHub.schedule;
 
   const PHASE_ORDER = { running: 0, upcoming: 1, unscheduled: 2, finished: 3 };
@@ -22,6 +22,7 @@
     const doc = ctx.data.getAttendance(c.id, p.today) || {};
     const tally = { in: 0, noReply: 0, ncns: 0, waiting: 0, points: 0 };
     for (const t of c.trainees) {
+      if (!isActiveOn(t, p.today)) continue;
       const r = doc.records && doc.records[t.id];
       if (r && r.points) tally.points += r.points;
       if (isIn(r)) tally.in++;
@@ -65,6 +66,7 @@
   function dayCell(c, t, d, p, ctx) {
     const r = recordOf(ctx, c, d, t);
     const ids = `data-cohort="${c.id}" data-date="${d}" data-trainee="${t.id}"`;
+    if (!isActiveOn(t, d)) return `<td><div class="day future" title="${shortDate(d)}: offboarded"><span class="muted small">–</span></div></td>`;
     if (d > p.today) return `<td><div class="day future"><input type="checkbox" class="tick" disabled aria-label="${esc(t.name)}, ${shortDate(d)}: upcoming"></div></td>`;
 
     const checked = isIn(r);
@@ -91,12 +93,12 @@
   function grid(c, p, ctx) {
     if (!c.trainees.length) return `<div class="empty">No trainees yet. Add them in the Cohorts tab.</div>`;
     if (!p.days.length) return "";
-    const elapsed = p.days.filter((d) => d <= p.today).length;
     const head1 = [0, 1, 2, 3].map((w) => `<th colspan="5" class="wk">Week ${w + 1}</th>`).join("");
     const head2 = p.days.map((d) => `<th class="day-h ${d === p.today ? "is-today" : ""}" title="${shortDate(d)}">${weekday(d)}<span>${Number(d.slice(8))}</span></th>`).join("");
 
     const rows = c.trainees.map((t) => {
       let daysIn = 0, points = 0;
+      const myElapsed = p.days.filter((d) => d <= p.today && isActiveOn(t, d)).length;
       for (const d of p.days) {
         const r = recordOf(ctx, c, d, t);
         if (d <= p.today && isIn(r)) daysIn++;
@@ -106,7 +108,7 @@
         <tr>
           <th class="name" scope="row">${esc(t.name)}${TrainerHub.tlTag(t)}</th>
           ${p.days.map((d) => dayCell(c, t, d, p, ctx)).join("")}
-          <td class="num tot">${daysIn}/${elapsed}</td>
+          <td class="num tot">${daysIn}/${myElapsed}</td>
           <td class="num tot pts-total ${points >= 2 ? "danger" : ""}">${fmtPoints(points)}</td>
         </tr>`;
     }).join("");

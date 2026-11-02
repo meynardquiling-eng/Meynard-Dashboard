@@ -68,6 +68,8 @@
     { name: "email", label: "Work Gmail", type: "email", required: true, value: t.email, placeholder: "name@company.com" },
     { name: "teamLead", label: "Team Lead (optional)", value: t.teamLead, placeholder: "e.g. Kevin",
       hint: c && teamLeadNames(c).length ? "In this cohort: " + teamLeadNames(c).join(", ") : "The Team Lead this trainee goes to after training." },
+    { name: "offboardedOn", label: "Offboarded on (optional)", type: "date", value: t.offboardedOn,
+      hint: "From this day the trainee is left out of the Goodmorning check-in. Past attendance stays." },
   ];
 
   // Returns an error message if the email is invalid or already used in this cohort.

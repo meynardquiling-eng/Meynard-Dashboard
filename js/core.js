@@ -35,7 +35,10 @@ window.TrainerHub = (function () {
     type ? `<span class="pill class-${type.toLowerCase().replace(/[^a-z]+/g, "-")}">${esc(type)}</span>` : "";
 
   // A trainee's Team Lead as a small label beside their name (nothing when none is set).
-  const tlTag = (t) => (t && t.teamLead ? ` <span class="tl-tag" title="Team Lead">TL ${esc(t.teamLead)}</span>` : "");
+  const tlTag = (t) => (t && t.teamLead ? ` <span class="tl-tag" title="Team Lead">TL ${esc(t.teamLead)}</span>` : "")
+    + (t && t.offboardedOn ? ` <span class="pill mute" title="Left out of attendance from this day">Offboarded ${esc(t.offboardedOn.slice(5).replace("-", "/"))}</span>` : "");
+  // Offboarded trainees are left out of attendance from their offboarding day on.
+  const isActiveOn = (t, date) => !(t && t.offboardedOn && date >= t.offboardedOn);
 
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -225,7 +228,7 @@ window.TrainerHub = (function () {
 
   return {
     tools, registerTool, CLASS_TYPES, fold, isFoldOpen, setFoldOpen, chooseAction, showDialog,
-    esc, pill, icon, initials, plural, tlTag, classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
+    esc, pill, icon, initials, plural, tlTag, isActiveOn,classTypePill, uid, isEmail, formatDate, formatSize, placeholder,
     toast, store, openForm, confirmAction,
   };
 })();

@@ -6,7 +6,8 @@ Trainer Dashboard: classes/<classId>/attendance/<date>  { date, marks: {id: P|A|
 
 Marks: 2 points (no call, no show) -> A. 0.25 to 1 point -> L with that many points. Checked in -> P.
 Not checked in with no points -> P, listed under "unresolved" so the trainer can look.
-Trainees are matched by name (both dashboards use the email username).
+Trainees are matched by name (both dashboards use the email username). Trainees offboarded on or before the day
+(Trainer Hub `offboardedOn`) are left out of the doc.
 
 python3 team-attendance-sync.py <hub cohort.json> <hub attendance.json> <team trainees dir> [<team attendance.json>] > out.json
 Prints { doc, changes, unresolved, unmatched } where doc is ready to write to the Trainer Dashboard.
@@ -22,12 +23,15 @@ team = {load(f).get("name", "").strip().lower(): os.path.basename(f)[:-5] for f 
 old = load(sys.argv[4]) if len(sys.argv) > 4 and os.path.exists(sys.argv[4]) else {}
 
 hub_name = {t["id"]: t["name"].strip().lower() for t in cohort["trainees"]}
+gone = {t["name"].strip().lower() for t in cohort["trainees"] if t.get("offboardedOn") and t["offboardedOn"] <= att["date"]}
 marks, late, names, unresolved, unmatched = {}, {}, {}, [], []
 for name, tid in team.items():
+    if name in gone: continue
     names[tid] = name
     marks[tid] = "P"  # the Trainer Dashboard's own default for anyone not marked
 for hid, r in (att.get("records") or {}).items():
     name = hub_name.get(hid)
+    if name in gone: continue
     tid = team.get(name)
     if not tid:
         unmatched.append(name or hid)

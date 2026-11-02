@@ -119,6 +119,9 @@ username). Marks:
 | 2 points (NCNS) | A (counts 1 point there) |
 | not checked in, no points | P, and reported as unresolved |
 
+A trainee with `offboardedOn` (set in Cohorts → Edit trainee) is left out of the check-ins, the recheck and the
+team dashboard sync from that day on. Their past attendance stays.
+
 ## Routine prompt: team dashboard sync (step 10 of the 9:00 recheck)
 
 ```
