@@ -96,7 +96,15 @@
     const head1 = [0, 1, 2, 3].map((w) => `<th colspan="5" class="wk">Week ${w + 1}</th>`).join("");
     const head2 = p.days.map((d) => `<th class="day-h ${d === p.today ? "is-today" : ""}" title="${shortDate(d)}">${weekday(d)}<span>${Number(d.slice(8))}</span></th>`).join("");
 
-    const rows = c.trainees.map((t) => {
+    // Offboarded trainees are hidden unless the trainer chose to show them (remembered per browser).
+    const gone = c.trainees.filter((t) => t.offboardedOn && t.offboardedOn <= p.today);
+    const showGone = !!TrainerHub.store.get("attShowOffboarded:" + c.id, false);
+    const toggle = gone.length
+      ? `<div class="btn-row"><button type="button" class="btn secondary small" data-action="attendance:toggleOffboarded" data-cohort="${c.id}" aria-pressed="${showGone}">${showGone ? "Hide" : "Show"} offboarded (${gone.length})</button></div>`
+      : "";
+    const shown = showGone ? c.trainees : c.trainees.filter((t) => !gone.includes(t));
+
+    const rows = shown.map((t) => {
       let daysIn = 0, points = 0;
       const myElapsed = p.days.filter((d) => d <= p.today && isActiveOn(t, d)).length;
       for (const d of p.days) {
@@ -113,7 +121,7 @@
         </tr>`;
     }).join("");
 
-    return `
+    return `${toggle}
       <div class="table-wrap">
         <table class="att">
           <thead>
@@ -245,6 +253,12 @@
             TrainerHub.toast(`Saved ${t.name} for ${shortDate(date)}`);
           },
         });
+      },
+      // Show or hide offboarded trainees in this cohort's attendance grid.
+      toggleOffboarded(el, ctx) {
+        const key = "attShowOffboarded:" + el.dataset.cohort;
+        TrainerHub.store.set(key, !TrainerHub.store.get(key, false));
+        ctx.rerender();
       },
       assign(el, ctx) {
         if (!el.value) return;
